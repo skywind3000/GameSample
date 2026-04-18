@@ -41,6 +41,10 @@ public:
 
     // 获取全局音量 (0-1000)
     int GetMasterVolume() const;
+
+    // 检查音频后端是否初始化成功
+    // 仅在 GAMESOUND_IMPLEMENTATION 模式下可用
+    bool IsInitialized() const;
 };
 ```
 
@@ -228,14 +232,17 @@ void CALLBACK WaveOutCallback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
 int32_t mix_buffer_[BUFFER_TOTAL_SAMPLES];
 
 void MixAudio(int16_t* output_buffer, int sample_count) {
-    // sample_count = BUFFER_TOTAL_SAMPLES（总 int16_t 数量 = 帧数 × 声道数）
+    // sample_count = 总 int16_t 数量（帧数 × 声道数）
 
     // 清空混音缓冲区
     for (int i = 0; i < sample_count; i++) {
         mix_buffer_[i] = 0;
     }
 
+    // 线程安全：waveOut 需要显式加锁；SDL 回调已持有 SDL 锁，无需再加
+#if !GAMESOUND_USE_SDL
     EnterCriticalSection(&lock_);
+#endif
 
     for (auto& pair : channels_) {
         Channel* ch = pair.second;
@@ -291,7 +298,9 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
         }
     }
 
+#if !GAMESOUND_USE_SDL
     LeaveCriticalSection(&lock_);
+#endif
 
     ClampAndConvert(mix_buffer_, output_buffer, sample_count);
 }
@@ -305,31 +314,45 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
 
 #### 析构安全
 
+析构顺序：先关音频后端（停止回调、防止死锁），再清理 channel 和缓存（此时回调已停，无需加锁）。
+
 ```cpp
 ~GameSound() {
-    // 1. 设置关闭标志，通知回调退出
-    closing_ = true;
-    
-    // 2. 停止音频设备
-    waveOutReset(h_wave_out_);
-    Sleep(50);
-    waveOutClose(h_wave_out_);
-    
-    // 3. 清理缓冲区
-    for (int i = 0; i < 2; i++) {
-        if (wave_hdr_[i]) {
-            delete[] wave_hdr_[i]->lpData;
-            delete wave_hdr_[i];
-        }
-    }
-    
-    // 4. 清理 channel 和缓存（回调已停止，无需加锁）
+    // 1. 关闭音频后端（停止回调）
+    ShutdownAudioBackend();
+
+    // 2. 清理 channel 和缓存（回调已停止，无需加锁）
     for (auto& pair : channels_) delete pair.second;
     channels_.clear();
     for (auto& pair : wav_cache_) delete pair.second;
     wav_cache_.clear();
-    
+
+#if !GAMESOUND_USE_SDL
     DeleteCriticalSection(&lock_);
+#endif
+}
+```
+
+waveOut 的 ShutdownAudioBackend：
+```cpp
+closing_ = true;
+waveOutReset(h_wave_out_);
+Sleep(50);
+waveOutClose(h_wave_out_);
+for (int i = 0; i < 2; i++) {
+    delete[] wave_hdr_[i]->lpData;
+    delete wave_hdr_[i];
+}
+```
+
+SDL 的 ShutdownAudioBackend：
+```cpp
+SDL_CloseAudioDevice(audio_device_);
+audio_device_ = 0;
+// 仅在 GameSound 自己初始化了 audio subsystem 时才退出
+// 如果是 GameLib.SDL.h 初始化的，不应退出（否则会破坏 GameLib 的音频）
+if (sdl_audio_init_by_self_ && SDL_WasInit(SDL_INIT_AUDIO)) {
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 ```
 
@@ -494,7 +517,13 @@ GameSound.h 和 GameLib.SDL.h 可以安全共用：
 #### 初始化
 
 ```cpp
-// GameSound 构造时自动初始化 SDL audio subsystem（如果尚未初始化）
+SDL_SetMainReady();  // SDL_MAIN_HANDLED 已定义，必须调用此函数
+
+// 仅在 audio subsystem 未初始化时初始化（与 GameLib.SDL.h 兼容）
+if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+    SDL_InitSubSystem(SDL_INIT_AUDIO);
+}
+
 SDL_AudioSpec desired = {0};
 desired.freq = 44100;
 desired.format = AUDIO_S16SYS;
@@ -575,31 +604,31 @@ g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lSDL2 -lwinmm 
 int main() {
     GameSound sound;
 
-// 播放爆炸音效（播放 1 次，音量 80%）
-int explosion_ch = sound.PlayWAV("assets/explosion.wav", 1, 800);
+    // 播放爆炸音效（播放 1 次，音量 80%）
+    int explosion_ch = sound.PlayWAV("assets/explosion.wav", 1, 800);
 
-// 播放 BGM（无限循环，音量 50%）
-int bgm_ch = sound.PlayWAV("assets/bgm.wav", 0, 500);
+    // 播放 BGM（无限循环，音量 50%）
+    int bgm_ch = sound.PlayWAV("assets/bgm.wav", 0, 500);
 
-// 调整全局音量（影响所有 channel）
-sound.SetMasterVolume(600);  // 60% 全局音量
+    // 调整全局音量（影响所有 channel）
+    sound.SetMasterVolume(600);  // 60% 全局音量
 
-// 动态调整单个 channel 音量
-sound.SetVolume(bgm_ch, 300);  // BGM 音量 30%
+    // 动态调整单个 channel 音量
+    sound.SetVolume(bgm_ch, 300);  // BGM 音量 30%
 
-// 停止 BGM
-sound.StopWAV(bgm_ch);
+    // 停止 BGM
+    sound.StopWAV(bgm_ch);
 
-// 检查是否还在播放（注意返回值三态）
-if (sound.IsPlaying(explosion_ch) == 1) {
-    // 还在播放
-} else {
-    // 已结束（返回 -1 表示 channel 已释放，返回 0 表示未播放）
+    // 检查是否还在播放（注意返回值三态）
+    if (sound.IsPlaying(explosion_ch) == 1) {
+        // 还在播放
+    } else {
+        // 已结束（返回 -1 表示 channel 已释放，返回 0 表示未播放）
+    }
+
+    // 游戏结束时，停止所有音效
+    sound.StopAll();
 }
-
-// 游戏结束时，停止所有音效
-sound.StopAll();
-```
 
 ## 性能考虑
 
@@ -608,7 +637,7 @@ sound.StopAll();
 | WAV 缓存 | 同名 WAV 只加载一次，引用计数管理 |
 | 混音性能 | O(N) 复杂度，N 为活跃 channel 数 |
 | 内存占用 | WAV 数据 + 混音缓冲区（2048帧 ≈ 16KB） |
-| 线程安全 | CRITICAL_SECTION 保护共享数据 |
+| 线程安全 | waveOut: CRITICAL_SECTION; SDL: SDL_LockAudioDevice | 保护主线程与回调线程的并发访问 |
 | 低延迟 | 双缓冲区（2048帧），约 92ms 总延迟 |
 | 播放时长精度 | 延迟 < 2%（2048帧缓冲区实测） |
 
@@ -674,4 +703,5 @@ sound.StopAll();
 | SDL 音频格式 | 不允许格式变更（传 0） | WASAPI 原生 float32，允许变更会导致 MixAudio 的 int16 输出被误读为 float32 → 无声音 | 2026-04-19 |
 | SDL 回调分块混音 | len 可能大于 BUFFER_TOTAL_SAMPLES | WASAPI 下 len=16384 而 BUFFER_TOTAL_SAMPLES=4096，必须分块 | 2026-04-19 |
 | SDL MixAudio 不加锁 | 回调已持有 SDL 锁 | 回调中再次 SDL_LockAudioDevice 会死锁 | 2026-04-19 |
+| SDL 析构安全 | 仅退出自己初始化的 subsystem | 避免破坏 GameLib.SDL.h 或其他库的 SDL 音频 | 2026-04-19 |
 | 编译兼容 | GCC 4.9.2 / C++11 | Dev-C++ 5 自带编译器 | 2026-04-19 |

@@ -188,6 +188,7 @@ private:
 #if GAMESOUND_USE_SDL
     SDL_AudioDeviceID audio_device_;
     SDL_AudioSpec audio_spec_;
+    bool sdl_audio_init_by_self_;  // true if we initialized SDL audio ourselves
 #else
     HWAVEOUT h_wave_out_;
     WAVEFORMATEX wfx_;
@@ -257,7 +258,7 @@ private:
 inline GameSound::GameSound() 
     : next_channel_id_(1), initialized_(false), master_volume_(1000)
 #if GAMESOUND_USE_SDL
-    , audio_device_(0)
+    , audio_device_(0), sdl_audio_init_by_self_(false)
 #else
     , h_wave_out_(NULL), current_hdr_(0), closing_(false)
 #endif
@@ -758,7 +759,10 @@ inline bool GameSound::InitAudioBackend() {
             GS_DEBUG_PRINT("  SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
             return false;
         }
-        GS_DEBUG_PRINT("  SDL audio subsystem initialized");
+        sdl_audio_init_by_self_ = true;
+        GS_DEBUG_PRINT("  SDL audio subsystem initialized (by GameSound)");
+    } else {
+        GS_DEBUG_PRINT("  SDL audio subsystem already initialized");
     }
 
     SDL_AudioSpec desired;
@@ -834,8 +838,11 @@ inline void GameSound::ShutdownAudioBackend() {
         GS_DEBUG_PRINT("  SDL: Audio device closed");
         audio_device_ = 0;
     }
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    GS_DEBUG_PRINT("  SDL: Audio subsystem quit");
+    // Only quit audio subsystem if we initialized it ourselves
+    if (sdl_audio_init_by_self_ && SDL_WasInit(SDL_INIT_AUDIO)) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        GS_DEBUG_PRINT("  SDL: Audio subsystem quit (self-init)");
+    }
 #else
     if (h_wave_out_) {
         // Set closing flag BEFORE reset to prevent callback from re-entering
