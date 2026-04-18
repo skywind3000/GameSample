@@ -301,8 +301,11 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
                 ch->position = 0;
                 ch->repeat--;
             } else {
-                ch->is_playing = false;
-                ReleaseChannel(ch->id);
+                // 播放结束：内联释放，避免 ReleaseChannel 的二次查找
+                if (ch->wav) ch->wav->ref_count--;
+                delete ch;
+                it = channels_.erase(it);
+                continue;
             }
         }
     }
@@ -402,6 +405,12 @@ if (sdl_audio_init_by_self_ && SDL_WasInit(SDL_INIT_AUDIO)) {
 
 ```cpp
 WavData* ConvertToTargetFormat(WavData* src) {
+    // 防御性参数验证（即使 LoadWAVFromFile 已拦截，独立调用时仍需保护）
+    if (!src || !src->buffer || src->size == 0 ||
+        src->sample_rate == 0 || src->channels == 0) {
+        return NULL;
+    }
+
     const uint32_t target_rate = 44100;
     const uint16_t target_channels = 2;
 
@@ -469,6 +478,11 @@ WavData* LoadWAVFromFile(const char* filename) {
                                        ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
     uint16_t bits_per_sample = (uint16_t)((uint8_t)header[34] | ((uint8_t)header[35] << 8));
 
+    // 验证格式参数合法性（防止除零和未定义行为）
+    if (channels == 0 || channels > 2) { delete wav; fclose(f); return NULL; }
+    if (sample_rate == 0) { delete wav; fclose(f); return NULL; }
+    if (bits_per_sample != 8 && bits_per_sample != 16) { delete wav; fclose(f); return NULL; }
+
     // 查找 data chunk（跳过可能的中间 chunk）
     fseek(f, 12, SEEK_SET);
     while (!found_data) {
@@ -480,8 +494,14 @@ WavData* LoadWAVFromFile(const char* filename) {
             wav->size = chunk_size;
             found_data = true;
         } else {
-            fseek(f, chunk_size, SEEK_CUR);  // 跳过非 data chunk
+            // WAV 规范：chunk 按 2 字节对齐，奇数大小有 1 字节 padding
+            fseek(f, chunk_size + (chunk_size % 2), SEEK_CUR);  // 跳过非 data chunk
         }
+    }
+
+    // 验证 data chunk 大小
+    if (!found_data || wav->size == 0 || wav->size > 100 * 1024 * 1024) {
+        delete wav; fclose(f); return NULL;
     }
 
     // 读取 PCM 数据
@@ -736,3 +756,8 @@ int main() {
 | SDL MixAudio 不加锁 | 回调已持有 SDL 锁 | 回调中再次 SDL_LockAudioDevice 会死锁 | 2026-04-19 |
 | SDL 析构安全 | 仅退出自己初始化的 subsystem | 避免破坏 GameLib.SDL.h 或其他库的 SDL 音频 | 2026-04-19 |
 | 编译兼容 | GCC 4.9.2 / C++11 | Dev-C++ 5 自带编译器 | 2026-04-19 |
+| MixAudio channel 释放 | 内联 erase 替代 ReleaseChannel | 避免 ReleaseChannel 的二次 find 查找，迭代器生命周期更清晰 | 2026-04-19 |
+| WAV 参数验证 | channels/sample_rate/bits_per_sample 合法性检查 | 防止 ConvertToTargetFormat 除零和未初始化内存访问 | 2026-04-19 |
+| WAV data chunk 验证 | size != 0 且 ≤ 100MB | 防止超大值导致 bad_alloc 或 0 导致未定义行为 | 2026-04-19 |
+| WAV chunk padding | 奇数大小跳过 padding 字节 | WAV 规范要求 chunk 按 2 字节对齐，奇数大小有 1 字节填充 | 2026-04-19 |
+| ConvertToTargetFormat 入口验证 | NULL/空 buffer/size=0/sample_rate=0/channels=0 检查 | 独立调用时的除零保护，不依赖 LoadWAVFromFile 的上游拦截 | 2026-04-19 |
