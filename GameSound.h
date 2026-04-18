@@ -185,7 +185,7 @@ private:
 #endif
 
     static const int BUFFER_SAMPLES = 4096;
-    int16_t mix_buffer_[BUFFER_SAMPLES];
+    int32_t mix_buffer_[BUFFER_SAMPLES];  // int32_t to prevent overflow during mixing
 
     // Internal methods
     int16_t ReadSample(Channel* ch);
@@ -285,8 +285,9 @@ inline int16_t GameSound::ReadSample(Channel* ch) {
     if (pos >= ch->wav->size) return 0;
 
     if (ch->wav->bits_per_sample == 16) {
-        int16_t sample = (int16_t)(ch->wav->buffer[pos] | 
-                                    (ch->wav->buffer[pos + 1] << 8));
+        // Fixed: cast to uint8_t to prevent sign extension
+        int16_t sample = (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[pos] | 
+                                    ((uint16_t)(uint8_t)ch->wav->buffer[pos + 1] << 8));
         return sample;
     } else if (ch->wav->bits_per_sample == 8) {
         uint8_t sample8 = ch->wav->buffer[pos];
@@ -421,7 +422,9 @@ inline GameSound::WavData* GameSound::ConvertToTargetFormat(WavData* src) {
     int16_t* decoded = new int16_t[total_samples];
     for (uint32_t i = 0; i < total_samples; i++) {
         if (src->bits_per_sample == 16) {
-            decoded[i] = (int16_t)(src->buffer[i * 2] | (src->buffer[i * 2 + 1] << 8));
+            // Fixed: cast to uint8_t to prevent sign extension
+            decoded[i] = (int16_t)((uint16_t)(uint8_t)src->buffer[i * 2] | 
+                                    ((uint16_t)(uint8_t)src->buffer[i * 2 + 1] << 8));
         } else if (src->bits_per_sample == 8) {
             decoded[i] = (int16_t)((src->buffer[i] - 128) << 8);
         }
@@ -528,7 +531,7 @@ inline void GameSound::ReleaseChannel(int channel_id) {
 // Software mixer
 //---------------------------------------------------------------------
 inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
-    // Clear output buffer
+    // Clear output buffer (sample_count is total samples for all channels)
     for (int i = 0; i < sample_count; i++) {
         mix_buffer_[i] = 0;
     }
@@ -547,24 +550,37 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
         }
 
         float vol = ch->volume / 1000.0f;
-        int bytes_per_sample = (ch->wav->bits_per_sample / 8);
-        int samples_to_mix = sample_count;
-
+        
+        // bytes_per_frame = channels * bytes_per_sample
+        // For stereo 16-bit: 2 * 2 = 4 bytes per frame
+        int bytes_per_sample = ch->wav->bits_per_sample / 8;
+        int bytes_per_frame = bytes_per_sample * ch->wav->channels;
+        
+        // sample_count is total output samples (stereo = L+R pairs)
+        // We need to mix frames (one frame = all channels for one time point)
+        int frames_to_mix = sample_count / ch->wav->channels;
+        
         // Reduce mix count if channel data is insufficient
         uint32_t remaining_bytes = ch->wav->size - ch->position;
-        uint32_t remaining_samples = remaining_bytes / bytes_per_sample;
-        if ((uint32_t)samples_to_mix > remaining_samples) {
-            samples_to_mix = (int)remaining_samples;
+        uint32_t remaining_frames = remaining_bytes / bytes_per_frame;
+        if ((uint32_t)frames_to_mix > remaining_frames) {
+            frames_to_mix = (int)remaining_frames;
         }
 
-        // Mix samples
-        for (int i = 0; i < samples_to_mix; i++) {
-            int16_t sample = ReadSample(ch);
-            ch->position += bytes_per_sample;
-
-            // Apply volume
-            int32_t adjusted_sample = (int32_t)(sample * vol);
-            mix_buffer_[i] += (int16_t)adjusted_sample;
+        // Mix samples - one frame at a time
+        for (int frame = 0; frame < frames_to_mix; frame++) {
+            // Read each channel in the frame
+            for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
+                int16_t sample = ReadSample(ch);
+                ch->position += bytes_per_sample;
+                
+                // Calculate output index based on channel
+                int out_idx = frame * ch->wav->channels + ch_idx;
+                
+                // Apply volume and accumulate
+                int32_t adjusted_sample = (int32_t)(sample * vol);
+                mix_buffer_[out_idx] += adjusted_sample;
+            }
         }
 
         // Handle loop/end logic
@@ -596,11 +612,7 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
 #endif
 
     // Limiter processing (prevent overflow)
-    int32_t temp_buffer[BUFFER_SAMPLES];
-    for (int i = 0; i < sample_count; i++) {
-        temp_buffer[i] = mix_buffer_[i];
-    }
-    ClampAndConvert(temp_buffer, output_buffer, sample_count);
+    ClampAndConvert(mix_buffer_, output_buffer, sample_count);
 }
 
 //---------------------------------------------------------------------

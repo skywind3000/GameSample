@@ -430,6 +430,63 @@ wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) |
 
 ---
 
+### Bug 4: 混音缓冲区溢出导致声音沙哑
+
+**症状**：播放声音时声音沙哑、有爆音或杂音，与外部播放器效果明显不同。
+
+**根因 1**：`mix_buffer_` 定义为 `int16_t`，但多声道混音时累加会溢出。
+
+```cpp
+// 错误！int16_t 累加会溢出
+int16_t mix_buffer_[BUFFER_SAMPLES];
+
+// 混音时
+mix_buffer_[i] += (int16_t)adjusted_sample;  // 两个 20000 相加 = 40000，溢出！
+```
+
+**根因 2**：`ReadSample` 中读取 16-bit PCM 数据时也有符号扩展问题。
+
+```cpp
+// 错误！char 符号扩展
+int16_t sample = (int16_t)(ch->wav->buffer[pos] | (ch->wav->buffer[pos + 1] << 8));
+```
+
+**修复代码**：
+
+1. 混音缓冲区改为 int32_t：
+```cpp
+// 正确！使用 int32_t 防止累加溢出
+int32_t mix_buffer_[BUFFER_SAMPLES];
+```
+
+2. 混音时不要截断：
+```cpp
+// 正确！直接累加 int32_t
+int32_t adjusted_sample = (int32_t)(sample * vol);
+mix_buffer_[i] += adjusted_sample;  // 不要 cast 到 int16_t！
+```
+
+3. ReadSample 添加类型转换：
+```cpp
+// 正确！先转换为 uint8_t
+int16_t sample = (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[pos] | 
+                            ((uint16_t)(uint8_t)ch->wav->buffer[pos + 1] << 8));
+```
+
+4. ConvertToTargetFormat 同样需要修复：
+```cpp
+// 解码 PCM 数据时也要 cast
+decoded[i] = (int16_t)((uint16_t)(uint8_t)src->buffer[i * 2] | 
+                        ((uint16_t)(uint8_t)src->buffer[i * 2 + 1] << 8));
+```
+
+**影响**：
+- 多声道同时播放时声音质量
+- 所有 16-bit WAV 文件的播放质量
+- 重采样后的音频质量
+
+---
+
 ### Bug 2: waveOut 回调线程导致析构函数死锁
 
 **症状**：关闭窗口时程序卡死，即使没有播放任何声音。
