@@ -10,7 +10,9 @@
   - quickref.md          # GameLib.h 快速 API 参考
 - <GameName>/            # 各游戏项目目录（如 GeometryWars/）
   - assets/              # 游戏专属音效资源
-  - design.md            # 游戏设计文档
+  - design.md            # 游戏设计文档（玩法、敌人、计分、操控）
+  - spec.md              # 技术文档（技术实现、数据结构、性能）
+  - assets.md            # 资源列表（音效、图片等素材索引）
   - <game>.cpp           # 游戏源码
 - GameLib.h              # GameLib 游戏库（Win32 版，供参考）
 - GameLib.SDL.h          # GameLib 游戏库（SDL 版，供参考）
@@ -35,8 +37,29 @@
 
 每个游戏目录包含：
 - `design.md` — 游戏设计文档（玩法、敌人、计分、操控等）
+- `spec.md` — 技术文档（技术实现、数据结构、性能优化等）
+- `assets.md` — 资源列表（音效、图片等素材索引）
 - `assets/` — 游戏专属音效资源（WAV 格式）
 - `<game>.cpp` — 游戏完整源码
+
+## Game Design Principles
+
+开发或修改游戏时，请遵循以下设计原则：
+
+1. **优先使用 GameLib.h 已有功能**
+   - 充分利用 GameLib.h 提供的内置机制，如 `SetScene` 管理游戏状态（标题、战斗、结算等）。
+   - 避免自行重新实现已有功能（如状态机、碰撞检测、输入处理等）。
+   - 开发前先查阅 `docs/manual.md`，确认哪些功能已由 GameLib.h 提供。
+
+2. **文档驱动开发**
+   - **玩法设计**：参考同目录下的 `design.md`，明确核心玩法、敌人行为、计分规则、操控方式等。
+   - **技术规范**：参考同目录下的 `spec.md`，了解技术实现细节、数据结构、性能优化等。
+   - **资源列表**：参考同目录下的 `assets.md`，了解可用的音效、图片等资源及其用途。
+   - 开发前先阅读对应文档，不要在没有文档的情况下直接改代码。
+
+3. **保持简洁**
+   - 游戏代码应保持简单易懂，避免过度抽象或设计模式滥用。
+   - 优先使用 GameLib.h 的简单 API（如整数 ID 管理精灵），不要引入复杂的对象生命周期。
 
 ## Build
 
@@ -76,7 +99,11 @@ g++ -o geometry.exe geometry.cpp -mwindows
 
 - 先看 `docs/manual.md` 或 `docs/quickref.md` 了解 API 再下手。
 - 搜索或 review 时忽略目录下的 `.exe` / `.o` 编译产物。
-- 每个游戏的设计细节以对应 `design.md` 为准。
+- 每个游戏的设计细节以对应目录下的文档为准：
+  - `design.md` — 玩法设计（游戏规则、敌人、计分、操控）
+  - `spec.md` — 技术规范（技术实现、数据结构、性能优化）
+  - `assets.md` — 资源列表（音效、图片等素材索引）
+- 遵循 Game Design Principles 中的设计原则。
 
 ### 任务分类与行动路线
 
@@ -103,16 +130,18 @@ g++ -o geometry.exe geometry.cpp -mwindows
 ### 修改现有游戏
 
 1. **读设计文档**：先阅读对应游戏的 `design.md` 了解现有设计。
-2. **读 API 文档**：如涉及新 API 用法，查阅 `docs/manual.md`。
-3. **修改代码**：遵守 Code Constraints 中的游戏开发规范。
-4. **更新文档**：如改动涉及设计变化，同步更新 `design.md`。
+2. **读技术文档**：如涉及技术实现细节，查阅 `spec.md`。
+3. **读资源文档**：如需使用或添加音效/图片，查阅 `assets.md`。
+4. **读 API 文档**：如涉及新 API 用法，查阅 `docs/manual.md`。
+5. **修改代码**：遵守 Code Constraints 中的游戏开发规范。
+6. **更新文档**：如改动涉及设计变化，同步更新 `design.md`、`spec.md` 或 `assets.md`。
 
 ### 每次改动最小清单
 
-1. **读**：读相关文档（`docs/manual.md` 或游戏 `design.md`）
+1. **读**：读相关文档（`docs/manual.md`、游戏 `design.md`/`spec.md`/`assets.md`）
 2. **写**：写/改代码（遵守 Code Constraints）
 3. **验**：编译游戏验证
-4. **更**：更新 `design.md`（如果游戏玩法/设计变了）
+4. **更**：更新对应文档（如果玩法、技术或资源变了）
 
 ### 禁止事项
 
@@ -121,4 +150,4 @@ g++ -o geometry.exe geometry.cpp -mwindows
 - **禁止引入外部依赖**：所有功能通过 GameLib.h 提供的 API 实现。
 - **不要用 `git add -A` 或 `git add .`**：可能误提交编译产物或敏感文件，按文件名逐个 `git add`。
 - **不要提交编译产物**：忽略所有 `.exe`、`.o` 等文件。
-- **不要在没有读过对应文档的情况下直接改代码**：先看 `design.md` 和 API 文档。
+- **不要在没有读过对应文档的情况下直接改代码**：先看 `design.md`、`spec.md`、`assets.md` 和 API 文档。

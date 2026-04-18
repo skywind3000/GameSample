@@ -14,25 +14,34 @@
 
 ## 游戏流程
 
-无尽模式，不切换场景，所有阶段在同一画面内用状态机驱动：
+无尽模式，不切换场景，所有阶段用 GameLib.h 的 `SetScene` 机制管理：
 
 ```
 开头画面 → 战斗（持续生成敌人，难度递增） → 玩家死亡 → 死亡爆炸清屏 → 总结算画面 → 开头画面
 ```
 
-### 状态机
+### 场景状态机
+
+使用 `game.SetScene()` 和 `game.GetScene()` 管理游戏大状态：
 
 ```
-TITLE → COMBAT → DEATH → GAME_OVER → (回到 TITLE)
-  → 任意时刻玩家死亡 → DEATH → GAME_OVER → (回到 TITLE)
+SCENE_TITLE (1) → SCENE_COMBAT (2) → SCENE_DEATH (3) → SCENE_GAME_OVER (4) → SCENE_TITLE (1)
 ```
+
+| 场景 ID | 名称 | 说明 |
+|---------|------|------|
+| `SCENE_TITLE` (1) | 标题画面 | 显示标题、操作说明，等待 Enter |
+| `SCENE_COMBAT` (2) | 战斗 | 正常游戏，敌人生成、射击、计分 |
+| `SCENE_DEATH` (3) | 死亡动画 | 播放死亡爆炸，约 1.5 秒后自动转入 GAME_OVER |
+| `SCENE_GAME_OVER` (4) | 结算画面 | 显示统计，按 R 回到 TITLE |
 
 ### 1. 开头画面 (TITLE)
 
 - 背景：黑底 + 弹簧网格缓慢自动波动（无玩家无敌人）。
 - 标题：屏幕中央大号 **"GEOMETRY WARS"**（`DrawTextScale`，scale 3~4），霓虹青色，带缓慢脉冲明暗。
 - 副标题：标题下方小字 **"PRESS ENTER TO START"**，闪烁。
-- 按 Enter → 进入 COMBAT，立即开始战斗。
+- 操作说明：标题下方列出详细操控方式（WASD 移动、鼠标瞄准、左键射击、Enter 开始）。
+- 按 Enter → 进入 SCENE_COMBAT，立即开始战斗。
 
 ### 2. 战斗 (COMBAT)
 
@@ -120,7 +129,7 @@ TITLE → COMBAT → DEATH → GAME_OVER → (回到 TITLE)
 - 从玩家位置射向鼠标方向。
 - 左键按住连发，射速约每秒 8~10 发。
 - 子弹外形：小型发光圆点，带短拖尾。
-- 子弹飞行速度快，飞出地图边界后消失。
+- 子弹速度：810 px/s，飞行时间短，飞出地图边界后消失。
 - 子弹命中敌人或飞出边界时对弹簧网格施加小幅冲击。
 
 ## 敌人

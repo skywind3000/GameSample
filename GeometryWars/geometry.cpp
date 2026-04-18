@@ -36,7 +36,7 @@
 #define MAX_PARTICLES    800
 
 #define PLAYER_SPEED  250.0f
-#define BULLET_SPEED  600.0f
+#define BULLET_SPEED  810.0f
 #define SHOOT_RATE    0.12f
 #define COMBO_TIMEOUT 2.0f
 
@@ -59,9 +59,11 @@ static Bullet bullets[MAX_BULLETS];
 static Enemy enemies[MAX_ENEMIES];
 static Particle particles[MAX_PARTICLES];
 
-static enum {
-    ST_TITLE = 0, ST_COMBAT, ST_DEATH, ST_GAME_OVER
-} gameState = ST_TITLE;
+// Scene IDs (managed by GameLib.h SetScene)
+#define SCENE_TITLE     1
+#define SCENE_COMBAT    2
+#define SCENE_DEATH     3
+#define SCENE_GAME_OVER 4
 
 static int score = 0, combo = 0, kills = 0;
 static float comboTimer = 0.0f;
@@ -486,7 +488,7 @@ static void gameUpdate(GameLib &g, float dt) {
     }
 
     // Shooting
-    if (playerAlive && gameState == ST_COMBAT) {
+    if (playerAlive && g.GetScene() == SCENE_COMBAT) {
         shootTimer += dt;
         if (g.IsMouseDown(MOUSE_LEFT) && shootTimer >= SHOOT_RATE) {
             shootTimer = 0;
@@ -557,7 +559,7 @@ static void gameUpdate(GameLib &g, float dt) {
                 if (!enemies[i].active) continue;
                 if (dist(px, py, enemies[i].x, enemies[i].y) < enemies[i].r + 8) {
                     playerAlive = false;
-                    gameState = ST_DEATH;
+                    g.SetScene(SCENE_DEATH);
                     for (int j = 0; j < MAX_ENEMIES; j++) enemies[j].active = false;
                     spawnExplosion(px, py, COLOR_WHITE, 80);
                     spawnExplosion(px, py, COLOR_CYAN, 60);
@@ -583,7 +585,7 @@ static void gameUpdate(GameLib &g, float dt) {
     shakeUpdate();
 
     // Continuous enemy spawning
-    if (gameState == ST_COMBAT && playerAlive) {
+    if (g.GetScene() == SCENE_COMBAT && playerAlive) {
         gameTime += dt;
         
         // Determine max enemy type based on time
@@ -639,6 +641,7 @@ int main() {
     sounds.victory = pathOf("assets/sound/victory.wav", "../assets/sound/victory.wav");
 
     // Init
+    game.SetScene(SCENE_TITLE);
     gridInit();
     for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
     for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
@@ -656,9 +659,9 @@ int main() {
             invincible = !invincible;
         }
 
-        // ---- State machine ----
-        switch (gameState) {
-            case ST_TITLE: {
+        // ---- State machine using SetScene ----
+        switch (game.GetScene()) {
+            case SCENE_TITLE: {
                 game.Clear(COLOR_BLACK);
                 gridUpdate(fdt);
                 gridDraw(game);
@@ -675,7 +678,12 @@ int main() {
                     drawTextCentered(game, "PRESS ENTER TO START", WIN_H / 2 + 20, COLOR_LIGHT_GRAY, 1);
                 }
 
-                game.DrawText(WIN_W / 2 - 90, WIN_H / 2 + 50, "WASD:Move  Mouse:Aim  Click:Shoot", COLOR_DARK_GRAY);
+                // Controls instructions
+                int ctrlY = WIN_H / 2 + 50;
+                game.DrawText(WIN_W / 2 - 120, ctrlY, "WASD : Move", COLOR_DARK_GRAY);
+                game.DrawText(WIN_W / 2 - 120, ctrlY + 15, "Mouse : Aim", COLOR_DARK_GRAY);
+                game.DrawText(WIN_W / 2 - 120, ctrlY + 30, "Left Click : Shoot", COLOR_DARK_GRAY);
+                game.DrawText(WIN_W / 2 - 120, ctrlY + 45, "Enter : Start Game", COLOR_DARK_GRAY);
 
                 if (game.IsKeyPressed(KEY_ENTER)) {
                     score = 0; combo = 1; kills = 0;
@@ -689,13 +697,13 @@ int main() {
                     for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
                     for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
                     for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
-                    gameState = ST_COMBAT;
+                    game.SetScene(SCENE_COMBAT);
                     game.PlayWAV(sounds.noteHigh);
                 }
                 break;
             }
 
-            case ST_COMBAT: {
+            case SCENE_COMBAT: {
                 gameUpdate(game, fdt);
                 game.Clear(COLOR_BLACK);
                 gridDraw(game);
@@ -708,8 +716,9 @@ int main() {
                 break;
             }
 
-            case ST_DEATH: {
+            case SCENE_DEATH: {
                 static float deathTimer = 0;
+                if (game.IsSceneChanged()) deathTimer = 0;
                 deathTimer += fdt;
                 particlesUpdate(fdt);
                 gridUpdate(fdt);
@@ -730,15 +739,16 @@ int main() {
                 }
 
                 if (deathTimer > 1.5f) {
-                    gameState = ST_GAME_OVER;
+                    game.SetScene(SCENE_GAME_OVER);
                     deathTimer = 0;
                     game.PlayWAV(sounds.gameOver);
                 }
                 break;
             }
 
-            case ST_GAME_OVER: {
+            case SCENE_GAME_OVER: {
                 static float goTimer = 0;
+                if (game.IsSceneChanged()) goTimer = 0;
                 goTimer += fdt;
                 gridUpdate(fdt);
                 particlesUpdate(fdt);
@@ -768,7 +778,7 @@ int main() {
                         drawTextCentered(game, "PRESS R TO RESTART", WIN_H / 2 + 110, COLOR_LIGHT_GRAY, 1);
                     }
                     if (game.IsKeyPressed(KEY_R)) {
-                        gameState = ST_TITLE;
+                        game.SetScene(SCENE_TITLE);
                         goTimer = 0;
                         gridInit();
                         for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
@@ -785,7 +795,7 @@ int main() {
         }
 
         // Camera always updates (except title)
-        if (gameState != ST_TITLE) cameraUpdate();
+        if (game.GetScene() != SCENE_TITLE) cameraUpdate();
 
         game.Update();
     }
