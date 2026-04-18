@@ -81,6 +81,7 @@
 #endif
 
 #if USE_SDL
+    #define SDL_MAIN_HANDLED  // GameSound only uses SDL audio, not main
     #include <SDL2/SDL.h>
 #endif
 

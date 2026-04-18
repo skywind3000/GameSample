@@ -18,6 +18,7 @@
 //
 //=====================================================================
 #define GAMESOUND_DEBUG 1
+#define USE_SDL 1
 
 #define GAMESOUND_IMPLEMENTATION
 #include "../GameSound.h"
