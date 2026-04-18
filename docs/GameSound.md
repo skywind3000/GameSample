@@ -2,7 +2,7 @@
 
 ## 概述
 
-`GameSound.h` 是一个轻量级多声道音频播放库，为游戏提供低延迟、多通道 WAV 音频播放能力。支持 Windows waveOut 和 SDL2 两种后端，通过软件混音实现每个声道独立音量控制和全局音量控制。
+`GameSound.h` 是一个轻量级多声道音频播放库，为游戏提供低延迟、多通道 WAV 音频播放能力。支持 Windows waveOut 和 SDL2 两种后端，通过软件混音实现每个声道独立音量控制和全局音量控制。Windows 默认使用 waveOut 后端（零外部依赖），Linux/macOS 默认使用 SDL2 后端。
 
 ## API 接口
 
@@ -576,7 +576,7 @@ void SDLCALL SDLAudioCallback(void* userdata, Uint8* stream, int len) {
 
 ## 编译说明
 
-### Windows (waveOut)
+### Windows (waveOut 后端，默认)
 
 ```bash
 g++ -o game.exe game.cpp -mwindows -lwinmm
@@ -584,7 +584,7 @@ g++ -o game.exe game.cpp -mwindows -lwinmm
 
 **注意**：必须链接 `-lwinmm` 库。
 
-### SDL2
+### Windows (SDL2 后端)
 
 ```bash
 g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
@@ -594,6 +594,23 @@ g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lSDL2 -lwinmm 
 - 只需链接 `-lSDL2` 和 `-lwinmm`，无需 `-lmingw32 -lSDL2main`
 - GameSound.h 自动定义 `SDL_MAIN_HANDLED` 并调用 `SDL_SetMainReady()`，无需用户处理 SDL_main
 - `main()` 函数签名不受 SDL2 影响
+
+### Linux / macOS (SDL2 后端，默认)
+
+在非 Windows 平台上，`GAMESOUND_USE_SDL` 默认为 1，无需手动定义。
+
+```bash
+# Linux (SDL2 通常通过包管理器安装)
+g++ -o game game.cpp -lSDL2
+
+# macOS (Homebrew 安装的 SDL2)
+g++ -o game game.cpp -lSDL2 -I$(brew --prefix sdl2)/include -L$(brew --prefix sdl2)/lib
+```
+
+**注意**：
+- 无需 `-lwinmm`（Windows 专属库）
+- 无需 `-DGAMESOUND_USE_SDL=1`（非 Windows 平台自动启用 SDL 后端）
+- SDL2 头文件路径会自动检测（`<SDL2/SDL.h>` 或 `<SDL.h>`）
 
 ## 使用示例
 
@@ -638,6 +655,7 @@ int main() {
 | 混音性能 | O(N) 复杂度，N 为活跃 channel 数 |
 | 内存占用 | WAV 数据 + 混音缓冲区（2048帧 ≈ 16KB） |
 | 线程安全 | waveOut: CRITICAL_SECTION; SDL: SDL_LockAudioDevice | 保护主线程与回调线程的并发访问 |
+| 跨平台 | Windows 默认 waveOut，Linux/macOS 默认 SDL2 | Windows 零依赖；其他平台自动选择 SDL2 |
 | 低延迟 | 双缓冲区（2048帧），约 92ms 总延迟 |
 | 播放时长精度 | 延迟 < 2%（2048帧缓冲区实测） |
 
@@ -645,7 +663,7 @@ int main() {
 
 - **C++11 兼容**：不使用 C++14/17/20 特性
 - **GCC 4.9.2 兼容**
-- **无外部依赖**：Windows 版仅使用 Win32 API
+- **跨平台**：Windows 使用 waveOut（零依赖），Linux/macOS 使用 SDL2
 - **线程安全**：主线程和音频回调线程并发访问需保护
 - **实现位置**：所有实现在类内部（`#ifdef GAMESOUND_IMPLEMENTATION`）
 
@@ -677,7 +695,7 @@ int main() {
 
 | 决策项 | 选择 | 原因 | 时间 |
 |--------|------|------|------|
-| 音频后端 | Windows waveOut API | 零外部依赖，低延迟，适合游戏 | 2026-04-19 |
+| 音频后端 | Windows: waveOut; Linux/macOS: SDL2 | waveOut 零依赖；SDL2 跨平台 | 2026-04-19 |
 | 混音方式 | 软件混音 | 每个 channel 独立音量控制 | 2026-04-19 |
 | 缓冲区大小 | 2048 帧（默认） | waveOut 回调间隔约等于单缓冲区时长，小于此值会产生断续 | 2026-04-19 |
 | 缓冲区单位 | 帧（frame）而非 int16_t | 44100Hz/stereo/16bit 下帧含义明确，避免混淆 | 2026-04-19 |
@@ -697,9 +715,10 @@ int main() {
 | IsPlaying 返回值 | 三态（1/0/-1） | 区分"播放中"/"未播放"/"不存在" | 2026-04-19 |
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
-| SDL2 头文件引入 | GameSound.h 自动包含 SDL.h | 用户无需手动引入，检测 SDL_h_ 避免重复包含 | 2026-04-19 |
+| SDL2 头文件引入 | GameSound.h 自动包含 SDL.h，自动检测路径 | 支持 `<SDL2/SDL.h>` 和 `<SDL.h>` 两种路径，兼容不同平台和发行版 | 2026-04-19 |
 | SDL_MAIN_HANDLED | GameSound.h 自动定义 | 无需 -lmingw32 -lSDL2main，与 GameLib.SDL.h 兼容 | 2026-04-19 |
-| SDL2 链接 | 仅 -lSDL2 -lwinmm | SDL_MAIN_HANDLED 不需要 SDL2main 入口点适配 | 2026-04-19 |
+| 跨平台后端选择 | Windows 默认 waveOut，其他平台默认 SDL2 | waveOut 零依赖适合 Windows；SDL2 是 Linux/macOS 唯一选项 | 2026-04-19 |
+| SDL2 链接 | 仅 -lSDL2（Linux/macOS 无需 -lwinmm） | -lwinmm 是 Windows 专属；SDL_MAIN_HANDLED 不需要 SDL2main 入口点适配 | 2026-04-19 |
 | SDL 音频格式 | 不允许格式变更（传 0） | WASAPI 原生 float32，允许变更会导致 MixAudio 的 int16 输出被误读为 float32 → 无声音 | 2026-04-19 |
 | SDL 回调分块混音 | len 可能大于 BUFFER_TOTAL_SAMPLES | WASAPI 下 len=16384 而 BUFFER_TOTAL_SAMPLES=4096，必须分块 | 2026-04-19 |
 | SDL MixAudio 不加锁 | 回调已持有 SDL 锁 | 回调中再次 SDL_LockAudioDevice 会死锁 | 2026-04-19 |

@@ -7,8 +7,8 @@
 //   - Per-channel volume control
 //   - WAV file caching with reference counting
 //   - Low latency audio output
-//   - Windows waveOut API backend (default)
-//   - SDL2 audio backend (optional)
+//   - Windows waveOut API backend (default on Windows)
+//   - SDL2 audio backend (default on Linux/macOS, optional on Windows)
 //
 // How to use (single file project, most common):
 //
@@ -49,11 +49,14 @@
 //     #define GAMESOUND_NO_IMPLEMENTATION
 //     #include "GameSound.h"
 //
-// Compile command (MinGW / Dev C++):
+// Compile command (Windows, waveOut backend):
 //     g++ -o game.exe main.cpp -mwindows -lwinmm
 //
-// Compile with SDL2 backend:
+// Compile with SDL2 backend (Windows):
 //     g++ -o game.exe main.cpp -I<SDL2_path>/include -L<SDL2_path>/lib -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
+//
+// Compile command (Linux/macOS, SDL2 backend is default):
+//     g++ -o game main.cpp -lSDL2
 //
 // Last Modified: 2026/04/19
 //
@@ -84,7 +87,18 @@
 #if GAMESOUND_USE_SDL
     #define SDL_MAIN_HANDLED
     #ifndef SDL_h_
-        #include <SDL2/SDL.h>
+        // Try common SDL2 header paths (Linux/macOS may use either)
+        #if defined(__has_include)
+            #if __has_include(<SDL2/SDL.h>)
+                #include <SDL2/SDL.h>
+            #elif __has_include(<SDL.h>)
+                #include <SDL.h>
+            #else
+                #error "GameSound.h: Cannot find SDL2 header. Install SDL2 or provide include path."
+            #endif
+        #else
+            #include <SDL2/SDL.h>
+        #endif
     #endif
 #endif
 
@@ -96,9 +110,9 @@
 #include <string.h>
 
 //---------------------------------------------------------------------
-// Link libraries
+// Link libraries (MSVC only, on Windows only)
 //---------------------------------------------------------------------
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && defined(_WIN32) && !GAMESOUND_USE_SDL
 #pragma comment(lib, "winmm.lib")
 #endif
 

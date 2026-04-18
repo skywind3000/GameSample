@@ -23,7 +23,7 @@
 #define GAMESOUND_DEBUG 1
 
 // Uncomment the next line to use SDL2 audio backend instead of waveOut:
-#define GAMESOUND_USE_SDL 1
+#define GAMESOUND_USE_SDL 0
 
 #define GAMESOUND_IMPLEMENTATION
 #include "../GameSound.h"
