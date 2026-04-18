@@ -12,9 +12,10 @@
 //
 // How to use (single file project, most common):
 //
+//     #define GAMESOUND_IMPLEMENTATION
 //     #include "GameSound.h"
 //
-//     int main() {
+//     int main(int argc, char* argv[]) {
 //         GameSound sound;
 //
 //         // Play explosion sound (once, 80% volume)
@@ -52,7 +53,7 @@
 //     g++ -o game.exe main.cpp -mwindows -lwinmm
 //
 // Compile with SDL2 backend:
-//     g++ -o game.exe main.cpp -mwindows -DUSE_SDL=1 `sdl2-config --cflags --libs`
+//     g++ -o game.exe main.cpp -I<SDL2_path>/include -L<SDL2_path>/lib -lmingw32 -lSDL2main -lSDL2 -DUSE_SDL=1
 //
 // Last Modified: 2026/04/19
 //
@@ -81,8 +82,12 @@
 #endif
 
 #if USE_SDL
-    #define SDL_MAIN_HANDLED  // GameSound only uses SDL audio, not main
-    #include <SDL2/SDL.h>
+    // Include SDL2 header — do NOT define SDL_MAIN_HANDLED here.
+    // SDL2main must work normally for WASAPI audio on Windows.
+    // Link with: -lmingw32 -lSDL2main -lSDL2
+    #ifndef SDL_h_
+        #include <SDL2/SDL.h>
+    #endif
 #endif
 
 #include <string>
@@ -572,7 +577,11 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
         mix_buffer_[i] = 0;
     }
 
+    // Note: no lock here - called from audio callback which already holds the lock
+    // Public APIs (PlayWAV/StopWAV/StopAll) lock before modifying channels_
+
 #if !USE_SDL
+    // waveOut callback runs in a separate thread, we need explicit locking
     EnterCriticalSection(&lock_);
 #endif
 
@@ -720,10 +729,19 @@ inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
 #if USE_SDL
 inline void SDLCALL GameSound::SDLAudioCallback(void* userdata, Uint8* stream, int len) {
     GameSound* sound = (GameSound*)userdata;
-    int samples = len / sizeof(int16_t);
-    int16_t output_buffer[BUFFER_TOTAL_SAMPLES];
-    sound->MixAudio(output_buffer, samples);
-    memcpy(stream, output_buffer, len);
+    int total_samples = len / sizeof(int16_t);
+    // SDL may request more samples than mix_buffer_ can hold, so mix in chunks
+    int chunk_samples = BUFFER_TOTAL_SAMPLES;
+    int16_t* out = (int16_t*)stream;
+    int offset = 0;
+    while (offset < total_samples) {
+        int to_mix = chunk_samples;
+        if (offset + to_mix > total_samples) {
+            to_mix = total_samples - offset;
+        }
+        sound->MixAudio(out + offset, to_mix);
+        offset += to_mix;
+    }
 }
 #endif
 
@@ -733,6 +751,16 @@ inline void SDLCALL GameSound::SDLAudioCallback(void* userdata, Uint8* stream, i
 inline bool GameSound::InitAudioBackend() {
 #if USE_SDL
     GS_DEBUG_PRINT("InitAudioBackend: SDL2");
+
+    // Initialize SDL audio subsystem if not already done
+    if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+            GS_DEBUG_PRINT("  SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
+            return false;
+        }
+        GS_DEBUG_PRINT("  SDL audio subsystem initialized");
+    }
+
     SDL_AudioSpec desired;
     memset(&desired, 0, sizeof(desired));
     desired.freq = 44100;
@@ -742,13 +770,15 @@ inline bool GameSound::InitAudioBackend() {
     desired.callback = SDLAudioCallback;
     desired.userdata = this;
 
-    audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, &audio_spec_, 0);
+    audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, &audio_spec_,
+                                          SDL_AUDIO_ALLOW_FORMAT_CHANGE);
     if (audio_device_ == 0) {
         GS_DEBUG_PRINT("  SDL_OpenAudioDevice failed: %s", SDL_GetError());
         return false;
     }
 
-    GS_DEBUG_PRINT("  SDL audio device opened, freq=%d", audio_spec_.freq);
+    GS_DEBUG_PRINT("  SDL audio device opened, freq=%d, channels=%d, samples=%d, format=%d",
+                    audio_spec_.freq, audio_spec_.channels, audio_spec_.samples, audio_spec_.format);
     SDL_PauseAudioDevice(audio_device_, 0); // Start playback
     return true;
 #else
@@ -805,6 +835,8 @@ inline void GameSound::ShutdownAudioBackend() {
         GS_DEBUG_PRINT("  SDL: Audio device closed");
         audio_device_ = 0;
     }
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    GS_DEBUG_PRINT("  SDL: Audio subsystem quit");
 #else
     if (h_wave_out_) {
         // Set closing flag BEFORE reset to prevent callback from re-entering
@@ -863,11 +895,15 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
     ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
     ch->is_playing = true;
 
-#if !USE_SDL
+#if USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
     EnterCriticalSection(&lock_);
 #endif
     channels_[ch_id] = ch;
-#if !USE_SDL
+#if USE_SDL
+    SDL_UnlockAudioDevice(audio_device_);
+#else
     LeaveCriticalSection(&lock_);
 #endif
 
@@ -880,11 +916,15 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
 inline int GameSound::StopWAV(int channel) {
     if (channels_.find(channel) == channels_.end()) return -1;
 
-#if !USE_SDL
+#if USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
     EnterCriticalSection(&lock_);
 #endif
     ReleaseChannel(channel);
-#if !USE_SDL
+#if USE_SDL
+    SDL_UnlockAudioDevice(audio_device_);
+#else
     LeaveCriticalSection(&lock_);
 #endif
     return 0;
@@ -914,7 +954,9 @@ inline int GameSound::SetVolume(int channel, int volume) {
 // Public API: StopAll
 //---------------------------------------------------------------------
 inline void GameSound::StopAll() {
-#if !USE_SDL
+#if USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
     EnterCriticalSection(&lock_);
 #endif
     std::vector<int> channel_ids;
@@ -926,7 +968,9 @@ inline void GameSound::StopAll() {
         ReleaseChannel(channel_ids[i]);
     }
     channels_.clear();
-#if !USE_SDL
+#if USE_SDL
+    SDL_UnlockAudioDevice(audio_device_);
+#else
     LeaveCriticalSection(&lock_);
 #endif
 }

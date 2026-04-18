@@ -467,7 +467,24 @@ WavData* LoadWAVFromFile(const char* filename) {
 
 当 `_WIN32` 未定义或 `USE_SDL != 0` 时启用。混音算法与 waveOut 完全相同。
 
+#### 头文件引入
+
+使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>`（如果尚未包含）。用户只需定义 `USE_SDL=1`：
+
 ```cpp
+#define USE_SDL 1
+#define GAMESOUND_IMPLEMENTATION
+#include "GameSound.h"
+```
+
+如果用户已在 GameSound.h 之前引入了 SDL.h（如 GameLib.SDL.h），GameSound.h 会检测 `SDL_h_` 宏并跳过重复引入。
+
+**重要**：不要在 GameSound.h 之前定义 `SDL_MAIN_HANDLED`。SDL2main 必须正常工作才能让 WASAPI 音频驱动初始化。
+
+#### 初始化
+
+```cpp
+// GameSound 构造时自动初始化 SDL audio subsystem（如果尚未初始化）
 SDL_AudioSpec desired = {0};
 desired.freq = 44100;
 desired.format = AUDIO_S16SYS;
@@ -476,11 +493,39 @@ desired.samples = BUFFER_FRAMES;       // SDL 的 samples 是帧数
 desired.callback = SDLAudioCallback;
 desired.userdata = this;
 
-audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, NULL, 0);
+audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, &audio_spec_,
+                                      SDL_AUDIO_ALLOW_FORMAT_CHANGE);
 SDL_PauseAudioDevice(audio_device_, 0);  // 开始播放
 ```
 
-**注意**：SDL 的 `desired.samples` 是帧数（与 `GAMESOUND_BUFFER_SAMPLES` 含义一致），而 waveOut 的 `dwBufferLength` 是字节数（需要用 `BUFFER_BYTES`）。
+**注意**：
+- SDL 的 `desired.samples` 是帧数（与 `GAMESOUND_BUFFER_SAMPLES` 含义一致），而 waveOut 的 `dwBufferLength` 是字节数（需要用 `BUFFER_BYTES`）
+- 使用 `SDL_AUDIO_ALLOW_FORMAT_CHANGE` 允许 SDL 调整格式以匹配设备
+
+#### SDL 回调的特殊处理
+
+SDL 回调的 `len` 参数可能大于 `BUFFER_TOTAL_SAMPLES`（如 WASAPI 下 len=16384，而 BUFFER_TOTAL_SAMPLES=4096），需要分块混音：
+
+```cpp
+void SDLCALL SDLAudioCallback(void* userdata, Uint8* stream, int len) {
+    GameSound* sound = (GameSound*)userdata;
+    int total_samples = len / sizeof(int16_t);
+    int chunk_samples = BUFFER_TOTAL_SAMPLES;
+    int16_t* out = (int16_t*)stream;
+    int offset = 0;
+    while (offset < total_samples) {
+        int to_mix = chunk_samples;
+        if (offset + to_mix > total_samples) to_mix = total_samples - offset;
+        sound->MixAudio(out + offset, to_mix);
+        offset += to_mix;
+    }
+}
+```
+
+#### 线程安全
+
+- SDL 回调期间已持有 `SDL_LockAudioDevice` 锁，MixAudio 内不再加锁
+- 公共 API（PlayWAV/StopWAV/StopAll）使用 `SDL_LockAudioDevice/SDL_UnlockAudioDevice` 保护
 
 ## 错误处理
 
@@ -504,15 +549,24 @@ g++ -o game.exe game.cpp -mwindows -lwinmm
 ### SDL2
 
 ```bash
-g++ -o game.exe game.cpp -mwindows -DUSE_SDL=1 `sdl2-config --cflags --libs`
+g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lmingw32 -lSDL2main -lSDL2 -DUSE_SDL=1
 ```
+
+**注意**：
+- 必须链接 `-lmingw32 -lSDL2main -lSDL2`（顺序重要，-lmingw32 必须在 -lSDL2main 前面）
+- SDL2main 是 SDL2 在 Windows 上的入口点适配层，WASAPI 音频驱动需要它才能正常工作
+- 使用 `SDL_MAIN_HANDLED` + `SDL_SetMainReady()` 会导致 WASAPI 无法初始化（无声音）
+- GameSound.h 会自动包含 `<SDL2/SDL.h>`（如果尚未包含），用户无需手动引入
+- `main()` 函数签名必须为 `int main(int argc, char* argv[])`（SDL2 会将 main 重命名为 SDL_main）
 
 ## 使用示例
 
 ```cpp
+#define GAMESOUND_IMPLEMENTATION
 #include "GameSound.h"
 
-GameSound sound;
+int main(int argc, char* argv[]) {
+    GameSound sound;
 
 // 播放爆炸音效（播放 1 次，音量 80%）
 int explosion_ch = sound.PlayWAV("assets/explosion.wav", 1, 800);
@@ -607,4 +661,9 @@ sound.StopAll();
 | IsPlaying 返回值 | 三态（1/0/-1） | 区分"播放中"/"未播放"/"不存在" | 2026-04-19 |
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
+| SDL2 头文件引入 | GameSound.h 自动包含 SDL.h | 用户无需手动引入，检测 SDL_h_ 避免重复包含 | 2026-04-19 |
+| SDL2 链接顺序 | -lmingw32 -lSDL2main -lSDL2 | 链接顺序重要，-lmingw32 必须在 -lSDL2main 前 | 2026-04-19 |
+| SDL_MAIN_HANDLED | 不使用 | WASAPI 需要 SDL2main 正确初始化，SDL_MAIN_HANDLED 导致无声音 | 2026-04-19 |
+| SDL 回调分块混音 | len 可能大于 BUFFER_TOTAL_SAMPLES | WASAPI 下 len=16384 而 BUFFER_TOTAL_SAMPLES=4096，必须分块 | 2026-04-19 |
+| SDL MixAudio 不加锁 | 回调已持有 SDL 锁 | 回调中再次 SDL_LockAudioDevice 会死锁 | 2026-04-19 |
 | 编译兼容 | GCC 4.9.2 / C++11 | Dev-C++ 5 自带编译器 | 2026-04-19 |
