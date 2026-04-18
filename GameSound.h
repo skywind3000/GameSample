@@ -745,9 +745,17 @@ inline void GameSound::ShutdownAudioBackend() {
     }
 #else
     if (h_wave_out_) {
+        // Set closing flag BEFORE reset to prevent callback from re-entering
+        GS_DEBUG_PRINT("  waveOut: Setting closing flag...");
+        closing_ = true;
+        
+        // Small delay to let any in-flight callback complete
         GS_DEBUG_PRINT("  waveOut: Calling waveOutReset...");
         MMRESULT reset_result = waveOutReset(h_wave_out_);
         GS_DEBUG_PRINT("  waveOut: waveOutReset returned: %u", reset_result);
+        
+        // Give callback thread time to exit
+        Sleep(50);
         
         GS_DEBUG_PRINT("  waveOut: Calling waveOutClose...");
         MMRESULT close_result = waveOutClose(h_wave_out_);
