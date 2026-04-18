@@ -10,7 +10,7 @@
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
 #endif
-#include "../../GameLib.h"
+#include "../GameLib.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
