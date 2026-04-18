@@ -179,7 +179,8 @@ private:
 #else
     HWAVEOUT h_wave_out_;
     WAVEFORMATEX wfx_;
-    WAVEHDR* wave_hdr_;
+    WAVEHDR* wave_hdr_[2];  // Double buffering
+    int current_hdr_;       // Which buffer is currently being filled
     CRITICAL_SECTION lock_;
     volatile bool closing_; // Flag to signal callback to stop
 #endif
@@ -231,7 +232,7 @@ inline GameSound::GameSound()
 #if USE_SDL
     , audio_device_(0)
 #else
-    , h_wave_out_(NULL), wave_hdr_(NULL), closing_(false)
+    , h_wave_out_(NULL), current_hdr_(0), closing_(false)
 #endif
 {
     GS_DEBUG_PRINT("Constructor called");
@@ -636,7 +637,7 @@ inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
     
     WAVEHDR* hdr = (WAVEHDR*)dwParam1;
 
-    GS_DEBUG_PRINT("Callback: WOM_DONE received");
+    GS_DEBUG_PRINT("Callback: WOM_DONE received for hdr=%p", hdr);
 
     // Mix audio data
     int samples = BUFFER_SAMPLES;
@@ -649,13 +650,13 @@ inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
         return;
     }
 
-    // Prepare and write next buffer
+    // Reuse the completed buffer - just update with new audio
     memcpy(hdr->lpData, output_buffer, samples * sizeof(int16_t));
     hdr->dwBufferLength = samples * sizeof(int16_t);
     hdr->dwFlags = 0;
     waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
     waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
-    GS_DEBUG_PRINT("Callback: buffer submitted");
+    GS_DEBUG_PRINT("Callback: buffer %p resubmitted", hdr);
 }
 #endif
 
@@ -704,7 +705,7 @@ inline bool GameSound::InitAudioBackend() {
     wfx_.wBitsPerSample = 16;
     wfx_.nChannels = 2;
     wfx_.nBlockAlign = (wfx_.wBitsPerSample / 8) * wfx_.nChannels;
-    wfx_.nAvgBytesPerSec = wfx_.nSamplesPerSec * wfx_.nChannels;
+    wfx_.nAvgBytesPerSec = wfx_.nSamplesPerSec * wfx_.nBlockAlign;
     wfx_.cbSize = 0;
 
     // Open audio device
@@ -719,27 +720,25 @@ inline bool GameSound::InitAudioBackend() {
 
     GS_DEBUG_PRINT("  waveOut device opened");
 
-    // Prepare and write initial buffer
+    // Prepare and submit initial buffers (double buffering)
     int samples = BUFFER_SAMPLES;
-    int16_t output_buffer[BUFFER_SAMPLES];
-    memset(output_buffer, 0, samples * sizeof(int16_t));
-
-    GS_DEBUG_PRINT("  waveOut: Allocating WAVEHDR...");
-    wave_hdr_ = new WAVEHDR();
-    memset(wave_hdr_, 0, sizeof(WAVEHDR));
-    wave_hdr_->lpData = (LPSTR)new char[samples * sizeof(int16_t)];
-    wave_hdr_->dwBufferLength = samples * sizeof(int16_t);
-    memcpy(wave_hdr_->lpData, output_buffer, samples * sizeof(int16_t));
-
-    GS_DEBUG_PRINT("  waveOut: Preparing header...");
-    MMRESULT prep_result = waveOutPrepareHeader(h_wave_out_, wave_hdr_, sizeof(WAVEHDR));
-    GS_DEBUG_PRINT("  waveOut: waveOutPrepareHeader returned: %u", prep_result);
+    int buffer_bytes = samples * sizeof(int16_t);
     
-    GS_DEBUG_PRINT("  waveOut: Writing buffer...");
-    MMRESULT write_result = waveOutWrite(h_wave_out_, wave_hdr_, sizeof(WAVEHDR));
-    GS_DEBUG_PRINT("  waveOut: waveOutWrite returned: %u", write_result);
+    for (int i = 0; i < 2; i++) {
+        wave_hdr_[i] = new WAVEHDR();
+        memset(wave_hdr_[i], 0, sizeof(WAVEHDR));
+        wave_hdr_[i]->lpData = (LPSTR)new char[buffer_bytes];
+        wave_hdr_[i]->dwBufferLength = buffer_bytes;
+        memset(wave_hdr_[i]->lpData, 0, buffer_bytes);
+        
+        MMRESULT prep = waveOutPrepareHeader(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
+        GS_DEBUG_PRINT("  waveOut: Prepared buffer %d, result=%u", i, prep);
+        
+        MMRESULT wr = waveOutWrite(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
+        GS_DEBUG_PRINT("  waveOut: Submitted buffer %d, result=%u", i, wr);
+    }
 
-    GS_DEBUG_PRINT("  Initial buffer submitted");
+    GS_DEBUG_PRINT("  Initial buffers submitted");
     return true;
 #endif
 }
@@ -777,16 +776,19 @@ inline void GameSound::ShutdownAudioBackend() {
         GS_DEBUG_PRINT("  waveOut: h_wave_out_ is NULL, skipping reset/close");
     }
     
-    if (wave_hdr_) {
-        GS_DEBUG_PRINT("  waveOut: Cleaning up WAVEHDR...");
-        if (wave_hdr_->lpData) {
-            delete[] wave_hdr_->lpData;
-            wave_hdr_->lpData = NULL;
+    // Clean up both buffers
+    for (int i = 0; i < 2; i++) {
+        if (wave_hdr_[i]) {
+            GS_DEBUG_PRINT("  waveOut: Cleaning buffer %d...", i);
+            if (wave_hdr_[i]->lpData) {
+                delete[] wave_hdr_[i]->lpData;
+                wave_hdr_[i]->lpData = NULL;
+            }
+            delete wave_hdr_[i];
+            wave_hdr_[i] = NULL;
         }
-        delete wave_hdr_;
-        wave_hdr_ = NULL;
-        GS_DEBUG_PRINT("  waveOut: WAVEHDR cleaned");
     }
+    GS_DEBUG_PRINT("  waveOut: WAVEHDR buffers cleaned");
 #endif
 }
 

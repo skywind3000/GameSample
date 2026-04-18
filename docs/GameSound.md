@@ -134,82 +134,106 @@ waveOutOpen(&h_wave_out_, WAVE_MAPPER, &wfx,
 使用**双缓冲区 + 回调**模式：
 
 ```cpp
-// 全局混音缓冲区（立体声，16-bit）
-static const int BUFFER_SIZE = 4096;  // 约 23ms @ 44100Hz
-int16_t mix_buffer[BUFFER_SIZE];      // 混合后的输出缓冲区
-int16_t channel_sample[BUFFER_SIZE];  // 单 channel 临时缓冲区
+// 全局混音缓冲区（int32_t 防止累加溢出）
+static const int BUFFER_SAMPLES = 4096;  // 输出样本数（立体声 = 2048 帧）
+int32_t mix_buffer_[BUFFER_SAMPLES];     // 混合后的输出缓冲区
 
-// 回调函数
+// waveOut 双缓冲区
+WAVEHDR* wave_hdr_[2];  // 两个缓冲区交替播放
+
+// 回调函数 - 复用已完成的缓冲区
 void CALLBACK WaveOutCallback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance, 
                                DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
     if (uMsg != WOM_DONE) return;
 
     GameSound* sound = (GameSound*)dwInstance;
-    sound->MixAudio();  // 混合所有活跃 channel
-    sound->SubmitBuffer(); // 提交下一个缓冲区
+    WAVEHDR* hdr = (WAVEHDR*)dwParam1;  // 已播放完的缓冲区
+
+    // 混音
+    int16_t output_buffer[BUFFER_SAMPLES];
+    sound->MixAudio(output_buffer, BUFFER_SAMPLES);
+
+    // 复用缓冲区
+    memcpy(hdr->lpData, output_buffer, BUFFER_SAMPLES * sizeof(int16_t));
+    hdr->dwBufferLength = BUFFER_SAMPLES * sizeof(int16_t);
+    hdr->dwFlags = 0;
+    waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
+    waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
 }
 ```
 
 #### 混音算法
 
+**重要**：立体声 WAV 的样本是交错存储的 `[L0, R0, L1, R1, ...]`，需要按"帧"处理。
+
 ```cpp
-void MixAudio() {
-    memset(mix_buffer, 0, BUFFER_SIZE * sizeof(int16_t));
+void MixAudio(int16_t* output_buffer, int sample_count) {
+    // 清空混音缓冲区（int32_t 防止溢出）
+    memset(mix_buffer_, 0, sample_count * sizeof(int32_t));
 
     for (auto& pair : channels_) {
         Channel* ch = pair.second;
         if (!ch->is_playing) continue;
 
-        // 提取该 channel 的 PCM 样本并应用音量
         float vol = ch->volume / 1000.0f;
-        for (int i = 0; i < samples_to_mix; i++) {
-            int16_t sample = ReadSample(ch);  // 读取当前位置样本
-            sample = (int16_t)(sample * vol); // 应用音量
-
-            // 累加到混音缓冲区（使用 int32_t 防止溢出）
-            ((int32_t*)mix_buffer)[i] += sample;
+        
+        // 计算每帧字节数（所有声道）
+        int bytes_per_sample = ch->wav->bits_per_sample / 8;  // 每个声道
+        int bytes_per_frame = bytes_per_sample * ch->wav->channels;  // 立体声 = 4
+        
+        // 计算要混音的帧数（不是样本数）
+        int frames_to_mix = sample_count / ch->wav->channels;
+        
+        // 对每一帧，读取所有声道
+        for (int frame = 0; frame < frames_to_mix; frame++) {
+            for (int ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
+                int16_t sample = ReadSample(ch);
+                ch->position += bytes_per_sample;
+                
+                // 输出索引 = 帧号 × 声道数 + 声道索引
+                int out_idx = frame * ch->wav->channels + ch_idx;
+                mix_buffer_[out_idx] += (int32_t)(sample * vol);
+            }
         }
-
-        // 更新播放位置
-        ch->position += samples_to_mix * bytes_per_sample;
 
         // 处理循环/结束逻辑
         if (ch->position >= ch->wav->size) {
             if (ch->repeat == 0) {
-                // 无限循环：重置位置
-                ch->position = 0;
+                ch->position = 0;  // 无限循环
             } else if (ch->repeat > 1) {
-                // 有限循环：重置位置，repeat--
                 ch->position = 0;
                 ch->repeat--;
             } else {
-                // repeat == 1：播放结束
                 ch->is_playing = false;
                 ch->wav->ref_count--;
             }
         }
     }
 
-    // 限幅处理（防止溢出）
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-        int32_t sample = ((int32_t*)mix_buffer)[i];
-        mix_buffer[i] = (int16_t)clamp(sample, -32768, 32767);
-    }
+    // 限幅处理（int32_t → int16_t）
+    ClampAndConvert(mix_buffer_, output_buffer, sample_count);
 }
 ```
 
 #### 注意事项
 
 1. **线程安全**：waveOut 回调在独立线程执行，访问 `channels_` 需要加锁
-   - 使用 `CRITICAL_SECTION` 或 `std::mutex`（C++11 可用）
+   - 使用 `CRITICAL_SECTION` 保护共享数据
    - 游戏主线程调用 `PlayWAV`/`StopWAV` 时需加锁
 
 2. **低延迟优化**：
-   - 使用较小的缓冲区（如 2048 或 4096 样本）
-   - 双缓冲区模式：一个缓冲区播放时，准备下一个缓冲区
+   - 使用较小的缓冲区（如 4096 样本）
+   - **双缓冲区模式**：两个 `WAVEHDR` 同时提交，避免播放间隙
+   - 回调复用已完成的缓冲区，无缝衔接
    - 回调函数尽量快，避免阻塞
 
-3. **WAV 格式支持与重采样**：
+3. **立体声帧处理**：
+   - 立体声 WAV 数据是交错存储的：`[L0, R0, L1, R1, ...]`
+   - 混音时必须按"帧"处理，每帧包含所有声道的样本
+   - `bytes_per_frame = channels × bits_per_sample / 8`
+   - 输出索引：`out_idx = frame × channels + channel_index`
+
+4. **WAV 格式支持与重采样**：
    - 仅支持 PCM 格式（非压缩）
    - 支持 8-bit 和 16-bit 输入
    - 支持单声道和立体声输入
@@ -484,6 +508,130 @@ decoded[i] = (int16_t)((uint16_t)(uint8_t)src->buffer[i * 2] |
 - 多声道同时播放时声音质量
 - 所有 16-bit WAV 文件的播放质量
 - 重采样后的音频质量
+
+---
+
+### Bug 5: 立体声样本处理错误导致声音变长和不连续
+
+**症状**：播放声音比外部播放器更长，声音不连续，有"空档"感（几毫秒的断续）。
+
+**根因 1**：混音器没有正确处理立体声帧。
+
+对于立体声 WAV，数据是交错存储的：
+```
+[L0, R0, L1, R1, L2, R2, ...]  ← 每帧 4 字节（2 声道 × 2 字节）
+```
+
+错误代码：
+```cpp
+// 错误！bytes_per_sample 没考虑声道数
+int bytes_per_sample = ch->wav->bits_per_sample / 8;  // 16/8 = 2，应该是 4
+int samples_to_mix = sample_count;  // 错误！应该是帧数
+
+// 导致每次只读一个声道，另一个声道被跳过
+for (int i = 0; i < samples_to_mix; i++) {
+    int16_t sample = ReadSample(ch);  // 只读左声道
+    ch->position += bytes_per_sample;  // 只前进 2 字节
+}
+```
+
+**修复代码**：
+
+```cpp
+// 正确！区分字节和帧
+int bytes_per_sample = ch->wav->bits_per_sample / 8;  // 每个声道 2 字节
+int bytes_per_frame = bytes_per_sample * ch->wav->channels;  // 每帧 4 字节（立体声）
+
+// 计算要混音的帧数（不是样本数）
+int frames_to_mix = sample_count / ch->wav->channels;
+
+// 检查剩余帧数
+uint32_t remaining_bytes = ch->wav->size - ch->position;
+uint32_t remaining_frames = remaining_bytes / bytes_per_frame;
+
+// 对每一帧，读取所有声道
+for (int frame = 0; frame < frames_to_mix; frame++) {
+    for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
+        int16_t sample = ReadSample(ch);
+        ch->position += bytes_per_sample;
+        
+        // 计算输出索引（考虑声道交错）
+        int out_idx = frame * ch->wav->channels + ch_idx;
+        mix_buffer_[out_idx] += (int32_t)(sample * vol);
+    }
+}
+```
+
+**根因 2**：`nAvgBytesPerSec` 计算错误。
+
+```cpp
+// 错误
+wfx_.nAvgBytesPerSec = wfx_.nSamplesPerSec * wfx_.nChannels;  // 44100 * 2 = 88200
+
+// 正确
+wfx_.nAvgBytesPerSec = wfx_.nSamplesPerSec * wfx_.nBlockAlign;  // 44100 * 4 = 176400
+```
+
+---
+
+### Bug 6: 单缓冲区导致播放不连续
+
+**症状**：声音播放不连续，有几毫秒的"空档"。
+
+**根因**：只使用一个 `WAVEHDR` 缓冲区。当缓冲区播放完后，waveOut 需要等待回调函数准备下一个缓冲区，这中间的间隙就是"空档"。
+
+```cpp
+// 错误！单缓冲区
+WAVEHDR* wave_hdr_;  // 只有一个
+
+// 初始化时提交一个
+waveOutWrite(h_wave_out_, wave_hdr_, sizeof(WAVEHDR));
+
+// 回调中准备下一个 - 但这时有间隙！
+void CALLBACK WaveOutCallback(...) {
+    // 填充缓冲区...
+    waveOutWrite(h_wave_out_, hdr, ...);  // 重新提交
+}
+```
+
+**修复方案**：使用双缓冲区。
+
+```cpp
+// 正确！双缓冲区
+WAVEHDR* wave_hdr_[2];
+
+// 初始化时提交两个缓冲区
+for (int i = 0; i < 2; i++) {
+    wave_hdr_[i] = new WAVEHDR();
+    wave_hdr_[i]->lpData = new char[buffer_bytes];
+    waveOutPrepareHeader(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
+    waveOutWrite(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
+}
+
+// 回调中复用已完成的缓冲区
+void CALLBACK WaveOutCallback(..., DWORD_PTR dwParam1, ...) {
+    WAVEHDR* hdr = (WAVEHDR*)dwParam1;  // 已播放完的缓冲区
+    
+    // 填充新音频数据
+    memcpy(hdr->lpData, output_buffer, buffer_bytes);
+    hdr->dwBufferLength = buffer_bytes;
+    hdr->dwFlags = 0;
+    
+    // 重新提交 - 此时另一个缓冲区正在播放，无缝衔接
+    waveOutPrepareHeader(h_wave_out_, hdr, sizeof(WAVEHDR));
+    waveOutWrite(h_wave_out_, hdr, sizeof(WAVEHDR));
+}
+```
+
+**关键点**：
+- waveOut 的回调参数 `dwParam1` 就是已播放完的 `WAVEHDR` 指针
+- 两个缓冲区交替播放，一个播放时另一个在回调中填充
+- 不需要跟踪 `current_hdr_`，waveOut 自动管理
+
+**影响**：
+- 声音播放的连续性
+- 避免几毫秒的播放间隙
+- 提供流畅的音频体验
 
 ---
 
