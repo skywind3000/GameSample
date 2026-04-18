@@ -469,7 +469,7 @@ WavData* LoadWAVFromFile(const char* filename) {
 
 #### 头文件引入
 
-使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>`（如果尚未包含）。用户只需定义 `GAMESOUND_USE_SDL=1`：
+使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>` 并定义 `SDL_MAIN_HANDLED`，调用 `SDL_SetMainReady()`。用户无需手动引入或处理 SDL_main：
 
 ```cpp
 #define GAMESOUND_USE_SDL 1
@@ -477,9 +477,7 @@ WavData* LoadWAVFromFile(const char* filename) {
 #include "GameSound.h"
 ```
 
-如果用户已在 GameSound.h 之前引入了 SDL.h（如 GameLib.SDL.h），GameSound.h 会检测 `SDL_h_` 宏并跳过重复引入。
-
-**重要**：不要在 GameSound.h 之前定义 `SDL_MAIN_HANDLED`。SDL2main 必须正常工作才能让 WASAPI 音频驱动初始化。
+如果用户已在 GameSound.h 之前引入了 SDL.h（如 GameLib.SDL.h），GameSound.h 会检测 `SDL_h_` 宏并跳过重复包含，但仍会定义 `SDL_MAIN_HANDLED`（如果尚未定义）。
 
 #### 初始化
 
@@ -548,15 +546,13 @@ g++ -o game.exe game.cpp -mwindows -lwinmm
 ### SDL2
 
 ```bash
-g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lmingw32 -lSDL2main -lSDL2 -DGAMESOUND_USE_SDL=1
+g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
 ```
 
 **注意**：
-- 必须链接 `-lmingw32 -lSDL2main -lSDL2`（顺序重要，-lmingw32 必须在 -lSDL2main 前面）
-- SDL2main 是 SDL2 在 Windows 上的入口点适配层，WASAPI 音频驱动需要它才能正常工作
-- 使用 `SDL_MAIN_HANDLED` + `SDL_SetMainReady()` 会导致 WASAPI 无法初始化（无声音）
-- GameSound.h 会自动包含 `<SDL2/SDL.h>`（如果尚未包含），用户无需手动引入
-- `main()` 函数签名必须为 `int main(int argc, char* argv[])`（SDL2 会将 main 重命名为 SDL_main）
+- 只需链接 `-lSDL2` 和 `-lwinmm`，无需 `-lmingw32 -lSDL2main`
+- GameSound.h 自动定义 `SDL_MAIN_HANDLED` 并调用 `SDL_SetMainReady()`，无需用户处理 SDL_main
+- `main()` 函数签名不受 SDL2 影响
 
 ## 使用示例
 
@@ -564,7 +560,7 @@ g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lmingw32 -lSDL
 #define GAMESOUND_IMPLEMENTATION
 #include "GameSound.h"
 
-int main(int argc, char* argv[]) {
+int main() {
     GameSound sound;
 
 // 播放爆炸音效（播放 1 次，音量 80%）
@@ -661,7 +657,8 @@ sound.StopAll();
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
 | SDL2 头文件引入 | GameSound.h 自动包含 SDL.h | 用户无需手动引入，检测 SDL_h_ 避免重复包含 | 2026-04-19 |
-| SDL2 链接顺序 | -lmingw32 -lSDL2main -lSDL2 | 链接顺序重要，-lmingw32 必须在 -lSDL2main 前 | 2026-04-19 |
+| SDL_MAIN_HANDLED | GameSound.h 自动定义 | 无需 -lmingw32 -lSDL2main，简化编译 | 2026-04-19 |
+| SDL2 链接 | 仅 -lSDL2 -lwinmm | SDL_MAIN_HANDLED 不需要 SDL2main 入口点适配 | 2026-04-19 |
 | SDL 音频格式 | 不允许格式变更（传 0） | WASAPI 原生 float32，允许变更会导致 MixAudio 的 int16 输出被误读为 float32 → 无声音 | 2026-04-19 |
 | SDL 回调分块混音 | len 可能大于 BUFFER_TOTAL_SAMPLES | WASAPI 下 len=16384 而 BUFFER_TOTAL_SAMPLES=4096，必须分块 | 2026-04-19 |
 | SDL MixAudio 不加锁 | 回调已持有 SDL 锁 | 回调中再次 SDL_LockAudioDevice 会死锁 | 2026-04-19 |

@@ -17,7 +17,7 @@
 //   g++ -o sound_demo.exe sound_demo.cpp -mconsole -lwinmm
 //
 // Compile with SDL2 backend:
-//   g++ -o sound_demo.exe sound_demo.cpp -I<SDL2>/include -L<SDL2>/lib -lmingw32 -lSDL2main -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
+//   g++ -o sound_demo.exe sound_demo.cpp -I<SDL2>/include -L<SDL2>/lib -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
 //
 //=====================================================================
 #define GAMESOUND_DEBUG 1
@@ -81,7 +81,7 @@ static void DrawTextBG(GameLib& game, int x, int y, const char* text, int text_c
     game.DrawText(x, y, text, text_color);
 }
 
-int main(int argc, char* argv[]) {
+int main() {
     DEBUG_PRINT("=== GameSound Demo Starting ===");
     DEBUG_PRINT("GAMESOUND_DEBUG=%d", GAMESOUND_DEBUG);
 

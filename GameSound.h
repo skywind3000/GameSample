@@ -15,7 +15,7 @@
 //     #define GAMESOUND_IMPLEMENTATION
 //     #include "GameSound.h"
 //
-//     int main(int argc, char* argv[]) {
+//     int main() {
 //         GameSound sound;
 //
 //         // Play explosion sound (once, 80% volume)
@@ -53,7 +53,7 @@
 //     g++ -o game.exe main.cpp -mwindows -lwinmm
 //
 // Compile with SDL2 backend:
-//     g++ -o game.exe main.cpp -I<SDL2_path>/include -L<SDL2_path>/lib -lmingw32 -lSDL2main -lSDL2 -DGAMESOUND_USE_SDL=1
+//     g++ -o game.exe main.cpp -I<SDL2_path>/include -L<SDL2_path>/lib -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
 //
 // Last Modified: 2026/04/19
 //
@@ -82,9 +82,7 @@
 #endif
 
 #if GAMESOUND_USE_SDL
-    // Include SDL2 header — do NOT define SDL_MAIN_HANDLED here.
-    // SDL2main must work normally for WASAPI audio on Windows.
-    // Link with: -lmingw32 -lSDL2main -lSDL2
+    #define SDL_MAIN_HANDLED
     #ifndef SDL_h_
         #include <SDL2/SDL.h>
     #endif
@@ -751,6 +749,8 @@ inline void SDLCALL GameSound::SDLAudioCallback(void* userdata, Uint8* stream, i
 inline bool GameSound::InitAudioBackend() {
 #if GAMESOUND_USE_SDL
     GS_DEBUG_PRINT("InitAudioBackend: SDL2");
+
+    SDL_SetMainReady();
 
     // Initialize SDL audio subsystem if not already done
     if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
