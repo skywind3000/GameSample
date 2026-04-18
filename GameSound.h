@@ -397,9 +397,20 @@ inline GameSound::WavData* GameSound::LoadWAVFromFile(const char* filename) {
 
     WavData* wav = new WavData();
     wav->channels = (uint16_t)((uint8_t)header[22] | ((uint8_t)header[23] << 8));
-    wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) | 
+    wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) |
                                    ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
     wav->bits_per_sample = (uint16_t)((uint8_t)header[34] | ((uint8_t)header[35] << 8));
+
+    // Validate format parameters
+    if (wav->channels == 0 || wav->channels > 2) {
+        delete wav; fclose(f); return NULL;
+    }
+    if (wav->sample_rate == 0) {
+        delete wav; fclose(f); return NULL;
+    }
+    if (wav->bits_per_sample != 8 && wav->bits_per_sample != 16) {
+        delete wav; fclose(f); return NULL;
+    }
 
     // Find data chunk
     fseek(f, 12, SEEK_SET);
@@ -410,16 +421,18 @@ inline GameSound::WavData* GameSound::LoadWAVFromFile(const char* filename) {
         if (fread(chunk_id, 1, 4, f) != 4) break;
         if (fread(&chunk_size, 4, 1, f) != 1) break;
 
-        if (chunk_id[0] == 'd' && chunk_id[1] == 'a' && 
+        if (chunk_id[0] == 'd' && chunk_id[1] == 'a' &&
             chunk_id[2] == 't' && chunk_id[3] == 'a') {
             found_data = true;
             wav->size = chunk_size;
         } else {
-            fseek(f, chunk_size, SEEK_CUR);
+            // WAV spec: chunks are padded to even size
+            uint32_t skip = chunk_size + (chunk_size % 2);
+            fseek(f, skip, SEEK_CUR);
         }
     }
 
-    if (!found_data) {
+    if (!found_data || wav->size == 0 || wav->size > 100 * 1024 * 1024) {
         delete wav;
         fclose(f);
         return NULL;
@@ -680,11 +693,12 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
                 ch->position = 0;
                 ch->repeat--;
             } else {
-                // Playback finished
-                ch->is_playing = false;
-                int ch_id = ch->id;
-                ++it; // Advance iterator before erasing
-                ReleaseChannel(ch_id);
+                // Playback finished — inline release, avoid double lookup
+                if (ch->wav) {
+                    ch->wav->ref_count--;
+                }
+                delete ch;
+                it = channels_.erase(it);
                 continue;
             }
         }
