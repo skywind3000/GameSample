@@ -770,8 +770,7 @@ inline bool GameSound::InitAudioBackend() {
     desired.callback = SDLAudioCallback;
     desired.userdata = this;
 
-    audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, &audio_spec_,
-                                          SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+    audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, &audio_spec_, 0);
     if (audio_device_ == 0) {
         GS_DEBUG_PRINT("  SDL_OpenAudioDevice failed: %s", SDL_GetError());
         return false;
