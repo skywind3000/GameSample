@@ -469,6 +469,11 @@ inline GameSound::WavData* GameSound::LoadWAVFromFile(const char* filename) {
 // Convert WAV to target format (44100Hz, stereo, 16-bit)
 //---------------------------------------------------------------------
 inline GameSound::WavData* GameSound::ConvertToTargetFormat(WavData* src) {
+    if (!src || !src->buffer || src->size == 0 ||
+        src->sample_rate == 0 || src->channels == 0) {
+        return NULL;
+    }
+
     const uint32_t target_rate = 44100;
     const uint16_t target_channels = 2;
     const uint16_t target_bps = 16;
