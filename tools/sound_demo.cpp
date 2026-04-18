@@ -29,7 +29,7 @@
 #include "../GameSound.h"
 
 #define GAMELIB_IMPLEMENTATION
-#include "../GameLib.h"
+#include "../GameLib.SDL.h"
 
 #include <stdio.h>
 #include <string.h>

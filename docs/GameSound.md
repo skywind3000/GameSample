@@ -469,15 +469,27 @@ WavData* LoadWAVFromFile(const char* filename) {
 
 #### 头文件引入
 
-使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>` 并定义 `SDL_MAIN_HANDLED`，调用 `SDL_SetMainReady()`。用户无需手动引入或处理 SDL_main：
+使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>`、定义 `SDL_MAIN_HANDLED`，并在初始化时调用 `SDL_SetMainReady()`。用户无需手动处理：
 
 ```cpp
 #define GAMESOUND_USE_SDL 1
 #define GAMESOUND_IMPLEMENTATION
 #include "GameSound.h"
+
+int main() {
+    GameSound sound;
+    // ...
+}
 ```
 
 如果用户已在 GameSound.h 之前引入了 SDL.h（如 GameLib.SDL.h），GameSound.h 会检测 `SDL_h_` 宏并跳过重复包含，但仍会定义 `SDL_MAIN_HANDLED`（如果尚未定义）。
+
+#### 与 GameLib.SDL.h 共用
+
+GameSound.h 和 GameLib.SDL.h 可以安全共用：
+- `SDL_MAIN_HANDLED`：两者都用 `#ifndef` 保护，不会重复定义
+- `SDL_SetMainReady()`：多次调用是安全的（SDL 内部只设一个标志），GameSound.h 和 GameLib.SDL.h 都会调用
+- `SDL_Init` vs `SDL_InitSubSystem`：GameSound.h 只初始化 AUDIO 子系统，GameLib.SDL.h 初始化 VIDEO+TIMER，`SDL_WasInit` 检查避免冲突
 
 #### 初始化
 
@@ -657,7 +669,7 @@ sound.StopAll();
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
 | SDL2 头文件引入 | GameSound.h 自动包含 SDL.h | 用户无需手动引入，检测 SDL_h_ 避免重复包含 | 2026-04-19 |
-| SDL_MAIN_HANDLED | GameSound.h 自动定义 | 无需 -lmingw32 -lSDL2main，简化编译 | 2026-04-19 |
+| SDL_MAIN_HANDLED | GameSound.h 自动定义 | 无需 -lmingw32 -lSDL2main，与 GameLib.SDL.h 兼容 | 2026-04-19 |
 | SDL2 链接 | 仅 -lSDL2 -lwinmm | SDL_MAIN_HANDLED 不需要 SDL2main 入口点适配 | 2026-04-19 |
 | SDL 音频格式 | 不允许格式变更（传 0） | WASAPI 原生 float32，允许变更会导致 MixAudio 的 int16 输出被误读为 float32 → 无声音 | 2026-04-19 |
 | SDL 回调分块混音 | len 可能大于 BUFFER_TOTAL_SAMPLES | WASAPI 下 len=16384 而 BUFFER_TOTAL_SAMPLES=4096，必须分块 | 2026-04-19 |
