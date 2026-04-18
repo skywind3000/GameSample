@@ -17,13 +17,13 @@
 //   g++ -o sound_demo.exe sound_demo.cpp -mconsole -lwinmm
 //
 // Compile with SDL2 backend:
-//   g++ -o sound_demo.exe sound_demo.cpp -I<SDL2>/include -L<SDL2>/lib -lmingw32 -lSDL2main -lSDL2 -lwinmm -DUSE_SDL=1
+//   g++ -o sound_demo.exe sound_demo.cpp -I<SDL2>/include -L<SDL2>/lib -lmingw32 -lSDL2main -lSDL2 -lwinmm -DGAMESOUND_USE_SDL=1
 //
 //=====================================================================
 #define GAMESOUND_DEBUG 1
 
 // Uncomment the next line to use SDL2 audio backend instead of waveOut:
-// #define USE_SDL 1
+#define GAMESOUND_USE_SDL 1
 
 #define GAMESOUND_IMPLEMENTATION
 #include "../GameSound.h"

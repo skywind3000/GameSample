@@ -465,14 +465,14 @@ WavData* LoadWAVFromFile(const char* filename) {
 
 ### SDL2 方案
 
-当 `_WIN32` 未定义或 `USE_SDL != 0` 时启用。混音算法与 waveOut 完全相同。
+当 `_WIN32` 未定义或 `GAMESOUND_USE_SDL != 0` 时启用。混音算法与 waveOut 完全相同。
 
 #### 头文件引入
 
-使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>`（如果尚未包含）。用户只需定义 `USE_SDL=1`：
+使用 SDL2 后端时，GameSound.h 会自动包含 `<SDL2/SDL.h>`（如果尚未包含）。用户只需定义 `GAMESOUND_USE_SDL=1`：
 
 ```cpp
-#define USE_SDL 1
+#define GAMESOUND_USE_SDL 1
 #define GAMESOUND_IMPLEMENTATION
 #include "GameSound.h"
 ```
@@ -549,7 +549,7 @@ g++ -o game.exe game.cpp -mwindows -lwinmm
 ### SDL2
 
 ```bash
-g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lmingw32 -lSDL2main -lSDL2 -DUSE_SDL=1
+g++ -o game.exe game.cpp -I<SDL2_include_path> -L<SDL2_lib_path> -lmingw32 -lSDL2main -lSDL2 -DGAMESOUND_USE_SDL=1
 ```
 
 **注意**：
