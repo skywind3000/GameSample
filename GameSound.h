@@ -1,0 +1,862 @@
+//=====================================================================
+//
+// GameSound.h - A single-header multi-channel audio playback library
+//
+// Features:
+//   - Multi-channel WAV audio playback with software mixing
+//   - Per-channel volume control
+//   - WAV file caching with reference counting
+//   - Low latency audio output
+//   - Windows waveOut API backend (default)
+//   - SDL2 audio backend (optional)
+//
+// How to use (single file project, most common):
+//
+//     #include "GameSound.h"
+//
+//     int main() {
+//         GameSound sound;
+//
+//         // Play explosion sound (once, 80% volume)
+//         int explosion = sound.PlayWAV("assets/explosion.wav", 1, 800);
+//
+//         // Play background music (infinite loop, 50% volume)
+//         int bgm = sound.PlayWAV("assets/bgm.wav", 0, 500);
+//
+//         // Check if explosion is still playing
+//         if (sound.IsPlaying(explosion)) {
+//             // ...
+//         }
+//
+//         // Adjust BGM volume dynamically
+//         sound.SetVolume(bgm, 300);
+//
+//         // Stop BGM
+//         sound.StopWAV(bgm);
+//
+//         // Stop all sounds when game ends
+//         sound.StopAll();
+//         // All cached WAV data is freed automatically on destruction
+//
+//         return 0;
+//     }
+//
+// Multi-file project: add this line before #include in the main .cpp file
+//     #define GAMESOUND_IMPLEMENTATION
+//     #include "GameSound.h"
+// In other .cpp files, add this line
+//     #define GAMESOUND_NO_IMPLEMENTATION
+//     #include "GameSound.h"
+//
+// Compile command (MinGW / Dev C++):
+//     g++ -o game.exe main.cpp -mwindows -lwinmm
+//
+// Compile with SDL2 backend:
+//     g++ -o game.exe main.cpp -mwindows -DUSE_SDL=1 `sdl2-config --cflags --libs`
+//
+// Last Modified: 2026/04/19
+//
+//=====================================================================
+#ifndef GAMESOUND_H
+#define GAMESOUND_H
+
+// Default behavior: include enables implementation (good for single file projects)
+#ifndef GAMESOUND_NO_IMPLEMENTATION
+#ifndef GAMESOUND_IMPLEMENTATION
+#define GAMESOUND_IMPLEMENTATION
+#endif
+#endif
+
+// Platform detection
+#ifdef _WIN32
+    #include <windows.h>
+    #include <mmsystem.h>
+    #ifndef USE_SDL
+        #define USE_SDL 0
+    #endif
+#else
+    #ifndef USE_SDL
+        #define USE_SDL 1
+    #endif
+#endif
+
+#if USE_SDL
+    #include <SDL2/SDL.h>
+#endif
+
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+//---------------------------------------------------------------------
+// Link libraries
+//---------------------------------------------------------------------
+#ifdef _MSC_VER
+#pragma comment(lib, "winmm.lib")
+#endif
+
+//---------------------------------------------------------------------
+// GameSound Class
+//---------------------------------------------------------------------
+class GameSound {
+public:
+    GameSound();
+    ~GameSound();
+
+    // Play a WAV file, returns channel ID
+    // Parameters:
+    //   filename - path to WAV file
+    //   repeat   - 0=infinite loop, 1=play once (default), >1=play N times
+    //   volume   - volume level (0-1000, default=1000)
+    // Returns:
+    //   >0  - channel ID (success)
+    //   -1  - file not found or load failed
+    //   -2  - audio device not initialized
+    //   -3  - memory allocation failed
+    int PlayWAV(const char* filename, int repeat = 1, int volume = 1000);
+
+    // Stop a specific channel
+    // Returns: 0 on success, -1 if channel not found
+    int StopWAV(int channel);
+
+    // Check if a channel is currently playing
+    // Returns: 1 if playing, 0 if not playing, -1 if channel not found
+    int IsPlaying(int channel);
+
+    // Set volume for a channel (0-1000)
+    // Returns: 0 on success, -1 if channel not found
+    int SetVolume(int channel, int volume);
+
+    // Stop all channels
+    void StopAll();
+
+#ifdef GAMESOUND_IMPLEMENTATION
+    // Check if audio backend is initialized
+    bool IsInitialized() const { return initialized_; }
+#endif
+
+#ifdef GAMESOUND_IMPLEMENTATION
+private:
+    // WAV data structure
+    struct WavData {
+        uint8_t* buffer;
+        uint32_t size;
+        uint32_t sample_rate;
+        uint16_t channels;
+        uint16_t bits_per_sample;
+        int ref_count;
+
+        WavData() : buffer(NULL), size(0), sample_rate(0), channels(0), 
+                    bits_per_sample(0), ref_count(0) {}
+        ~WavData() { if (buffer) delete[] buffer; }
+    };
+
+    // Channel state
+    struct Channel {
+        int id;
+        WavData* wav;
+        uint32_t position;
+        int repeat;
+        int volume;
+        bool is_playing;
+
+        Channel() : id(0), wav(NULL), position(0), repeat(1), 
+                    volume(1000), is_playing(false) {}
+    };
+
+    // Member variables
+    std::unordered_map<std::string, WavData*> wav_cache_;
+    std::unordered_map<int, Channel*> channels_;
+    int64_t next_channel_id_;
+    bool initialized_;
+
+#if USE_SDL
+    SDL_AudioDeviceID audio_device_;
+    SDL_AudioSpec audio_spec_;
+#else
+    HWAVEOUT h_wave_out_;
+    WAVEFORMATEX wfx_;
+    WAVEHDR* wave_hdr_;
+    CRITICAL_SECTION lock_;
+    volatile bool closing_; // Flag to signal callback to stop
+#endif
+
+    static const int BUFFER_SAMPLES = 4096;
+    int16_t mix_buffer_[BUFFER_SAMPLES];
+
+    // Internal methods
+    int16_t ReadSample(Channel* ch);
+    void ClampAndConvert(int32_t* input, int16_t* output, int count);
+    WavData* LoadWAVFromFile(const char* filename);
+    WavData* ConvertToTargetFormat(WavData* src);
+    WavData* LoadOrCacheWAV(const char* filename);
+    int AllocateChannel();
+    void ReleaseChannel(int channel_id);
+    void MixAudio(int16_t* output_buffer, int sample_count);
+
+#if USE_SDL
+    static void SDLCALL SDLAudioCallback(void* userdata, Uint8* stream, int len);
+#else
+    static void CALLBACK WaveOutCallback(HWAVEOUT hwo, UINT uMsg, 
+                                          DWORD_PTR dwInstance, 
+                                          DWORD_PTR dwParam1, DWORD_PTR dwParam2);
+#endif
+
+    bool InitAudioBackend();
+    void ShutdownAudioBackend();
+#endif
+};
+
+#ifdef GAMESOUND_IMPLEMENTATION
+//=====================================================================
+// Implementation
+//=====================================================================
+
+#ifndef GAMESOUND_DEBUG
+#define GAMESOUND_DEBUG 0
+#endif
+
+#define GS_DEBUG_PRINT(fmt, ...) do { \
+    if (GAMESOUND_DEBUG) printf("[GameSound] " fmt "\n", ##__VA_ARGS__); \
+} while(0)
+
+//---------------------------------------------------------------------
+// Constructor & Destructor
+//---------------------------------------------------------------------
+inline GameSound::GameSound() 
+    : next_channel_id_(1), initialized_(false)
+#if USE_SDL
+    , audio_device_(0)
+#else
+    , h_wave_out_(NULL), wave_hdr_(NULL), closing_(false)
+#endif
+{
+    GS_DEBUG_PRINT("Constructor called");
+#if !USE_SDL
+    InitializeCriticalSection(&lock_);
+#endif
+    initialized_ = InitAudioBackend();
+    GS_DEBUG_PRINT("InitAudioBackend returned: %d", initialized_);
+}
+
+inline GameSound::~GameSound() {
+    GS_DEBUG_PRINT("Destructor started");
+
+    // First shutdown audio backend (stops callbacks, prevents deadlock)
+    GS_DEBUG_PRINT("  Calling ShutdownAudioBackend...");
+    ShutdownAudioBackend();
+    GS_DEBUG_PRINT("  ShutdownAudioBackend done");
+
+    // Then clean up channels and cache (no lock needed since callbacks are stopped)
+    GS_DEBUG_PRINT("  Cleaning %u channels...", (unsigned)channels_.size());
+    for (std::unordered_map<int, Channel*>::iterator it = channels_.begin();
+         it != channels_.end(); ++it) {
+        delete it->second;
+    }
+    channels_.clear();
+    GS_DEBUG_PRINT("  Channels cleaned");
+
+    // Free all cached WAV data
+    GS_DEBUG_PRINT("  Cleaning %u cached WAVs...", (unsigned)wav_cache_.size());
+    for (std::unordered_map<std::string, WavData*>::iterator it = wav_cache_.begin();
+         it != wav_cache_.end(); ++it) {
+        delete it->second;
+    }
+    wav_cache_.clear();
+    GS_DEBUG_PRINT("  WAV cache cleaned");
+
+#if !USE_SDL
+    GS_DEBUG_PRINT("  Deleting critical section...");
+    DeleteCriticalSection(&lock_);
+    GS_DEBUG_PRINT("Destructor finished");
+#endif
+}
+
+//---------------------------------------------------------------------
+// Read PCM sample from channel
+//---------------------------------------------------------------------
+inline int16_t GameSound::ReadSample(Channel* ch) {
+    if (!ch || !ch->wav || !ch->wav->buffer) return 0;
+
+    uint32_t pos = ch->position;
+    if (pos >= ch->wav->size) return 0;
+
+    if (ch->wav->bits_per_sample == 16) {
+        int16_t sample = (int16_t)(ch->wav->buffer[pos] | 
+                                    (ch->wav->buffer[pos + 1] << 8));
+        return sample;
+    } else if (ch->wav->bits_per_sample == 8) {
+        uint8_t sample8 = ch->wav->buffer[pos];
+        return (int16_t)((sample8 - 128) << 8); // Convert to 16-bit
+    }
+    return 0;
+}
+
+//---------------------------------------------------------------------
+// Clamp and convert 32-bit to 16-bit with overflow protection
+//---------------------------------------------------------------------
+inline void GameSound::ClampAndConvert(int32_t* input, int16_t* output, int count) {
+    for (int i = 0; i < count; i++) {
+        int32_t sample = input[i];
+        if (sample > 32767) sample = 32767;
+        else if (sample < -32768) sample = -32768;
+        output[i] = (int16_t)sample;
+    }
+}
+
+//---------------------------------------------------------------------
+// Load WAV file from disk
+//---------------------------------------------------------------------
+inline GameSound::WavData* GameSound::LoadWAVFromFile(const char* filename) {
+#if _WIN32
+    FILE* f = NULL;
+    if (fopen_s(&f, filename, "rb") != 0 || f == NULL) {
+        return NULL;
+    }
+#else
+    FILE* f = fopen(filename, "rb");
+    if (!f) return NULL;
+#endif
+
+    // Read WAV header (44 bytes)
+    char header[44];
+    if (fread(header, 1, 44, f) != 44) {
+        fclose(f);
+        return NULL;
+    }
+
+    // Validate RIFF header
+    if (header[0] != 'R' || header[1] != 'I' || header[2] != 'F' || header[3] != 'F') {
+        fclose(f);
+        return NULL;
+    }
+
+    // Validate WAVE format
+    if (header[8] != 'W' || header[9] != 'A' || header[10] != 'V' || header[11] != 'E') {
+        fclose(f);
+        return NULL;
+    }
+
+    // Parse format chunk
+    uint16_t audio_format = (uint16_t)(header[20] | (header[21] << 8));
+    if (audio_format != 1) { // Only support PCM
+        fclose(f);
+        return NULL;
+    }
+
+    WavData* wav = new WavData();
+    wav->channels = (uint16_t)((uint8_t)header[22] | ((uint8_t)header[23] << 8));
+    wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) | 
+                                   ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
+    wav->bits_per_sample = (uint16_t)((uint8_t)header[34] | ((uint8_t)header[35] << 8));
+
+    // Find data chunk
+    fseek(f, 12, SEEK_SET);
+    bool found_data = false;
+    while (!found_data) {
+        char chunk_id[4];
+        uint32_t chunk_size = 0;
+        if (fread(chunk_id, 1, 4, f) != 4) break;
+        if (fread(&chunk_size, 4, 1, f) != 1) break;
+
+        if (chunk_id[0] == 'd' && chunk_id[1] == 'a' && 
+            chunk_id[2] == 't' && chunk_id[3] == 'a') {
+            found_data = true;
+            wav->size = chunk_size;
+        } else {
+            fseek(f, chunk_size, SEEK_CUR);
+        }
+    }
+
+    if (!found_data) {
+        delete wav;
+        fclose(f);
+        return NULL;
+    }
+
+    // Read PCM data
+    wav->buffer = new uint8_t[wav->size];
+    if (fread(wav->buffer, 1, wav->size, f) != wav->size) {
+        delete wav;
+        fclose(f);
+        return NULL;
+    }
+
+    fclose(f);
+
+    GS_DEBUG_PRINT("Loaded WAV: %s", filename);
+    GS_DEBUG_PRINT("  sample_rate=%u, channels=%u, bits=%u, size=%u", 
+                   wav->sample_rate, wav->channels, wav->bits_per_sample, wav->size);
+
+    // Convert to target format (44100Hz, stereo, 16-bit)
+    WavData* converted = ConvertToTargetFormat(wav);
+    if (converted) {
+        GS_DEBUG_PRINT("  Converted: rate=%u, ch=%u, size=%u",
+                       converted->sample_rate, converted->channels, converted->size);
+    } else {
+        GS_DEBUG_PRINT("  Conversion FAILED!");
+    }
+    delete wav; // Free original format data
+
+    return converted;
+}
+
+//---------------------------------------------------------------------
+// Convert WAV to target format (44100Hz, stereo, 16-bit)
+//---------------------------------------------------------------------
+inline GameSound::WavData* GameSound::ConvertToTargetFormat(WavData* src) {
+    const uint32_t target_rate = 44100;
+    const uint16_t target_channels = 2;
+    const uint16_t target_bps = 16;
+
+    // Decode original data to 16-bit samples
+    uint32_t bytes_per_sample = src->bits_per_sample / 8;
+    uint32_t total_samples = src->size / bytes_per_sample;
+    uint32_t samples_per_channel = total_samples / src->channels;
+
+    // Step 1: Decode to 16-bit array
+    int16_t* decoded = new int16_t[total_samples];
+    for (uint32_t i = 0; i < total_samples; i++) {
+        if (src->bits_per_sample == 16) {
+            decoded[i] = (int16_t)(src->buffer[i * 2] | (src->buffer[i * 2 + 1] << 8));
+        } else if (src->bits_per_sample == 8) {
+            decoded[i] = (int16_t)((src->buffer[i] - 128) << 8);
+        }
+    }
+
+    // Step 2: Resample (linear interpolation)
+    double ratio = (double)target_rate / src->sample_rate;
+    uint32_t new_samples_per_ch = (uint32_t)(samples_per_channel * ratio);
+    uint32_t new_total_samples = new_samples_per_ch * src->channels;
+
+    int16_t* resampled = new int16_t[new_total_samples];
+    for (uint16_t ch = 0; ch < src->channels; ch++) {
+        double src_index = 0;
+        for (uint32_t i = 0; i < new_samples_per_ch; i++) {
+            uint32_t idx = (uint32_t)src_index;
+            double frac = src_index - idx;
+
+            int16_t s0 = decoded[idx * src->channels + ch];
+            int16_t s1 = (idx + 1 < samples_per_channel) ? 
+                         decoded[(idx + 1) * src->channels + ch] : s0;
+
+            resampled[i * src->channels + ch] = (int16_t)(s0 * (1.0 - frac) + s1 * frac);
+            src_index += ratio;
+        }
+    }
+    delete[] decoded;
+
+    // Step 3: Convert mono to stereo
+    int16_t* stereo = NULL;
+    uint32_t stereo_samples = 0;
+
+    if (src->channels == 1) {
+        stereo_samples = new_samples_per_ch * 2; // L+R
+        stereo = new int16_t[stereo_samples];
+        for (uint32_t i = 0; i < new_samples_per_ch; i++) {
+            stereo[i * 2] = resampled[i];     // Left
+            stereo[i * 2 + 1] = resampled[i]; // Right
+        }
+        delete[] resampled;
+    } else {
+        stereo = resampled;
+        stereo_samples = new_total_samples;
+    }
+
+    // Step 4: Create new WavData
+    WavData* dst = new WavData();
+    dst->sample_rate = target_rate;
+    dst->channels = target_channels;
+    dst->bits_per_sample = target_bps;
+    dst->size = stereo_samples * sizeof(int16_t);
+    dst->buffer = new uint8_t[dst->size];
+    memcpy(dst->buffer, stereo, dst->size);
+
+    delete[] stereo;
+    return dst;
+}
+
+//---------------------------------------------------------------------
+// Load or get cached WAV
+//---------------------------------------------------------------------
+inline GameSound::WavData* GameSound::LoadOrCacheWAV(const char* filename) {
+    std::string key(filename);
+    std::unordered_map<std::string, WavData*>::iterator it = wav_cache_.find(key);
+    if (it != wav_cache_.end()) {
+        it->second->ref_count++;
+        return it->second;
+    }
+
+    WavData* wav = LoadWAVFromFile(filename);
+    if (wav) {
+        wav->ref_count = 1;
+        wav_cache_[key] = wav;
+    }
+    return wav;
+}
+
+//---------------------------------------------------------------------
+// Allocate unique channel ID
+//---------------------------------------------------------------------
+inline int GameSound::AllocateChannel() {
+    while (channels_.count((int)next_channel_id_)) {
+        next_channel_id_++;
+    }
+    int id = (int)next_channel_id_;
+    next_channel_id_++;
+    return id;
+}
+
+//---------------------------------------------------------------------
+// Release channel and decrement WAV ref count
+//---------------------------------------------------------------------
+inline void GameSound::ReleaseChannel(int channel_id) {
+    std::unordered_map<int, Channel*>::iterator it = channels_.find(channel_id);
+    if (it != channels_.end()) {
+        if (it->second->wav) {
+            it->second->wav->ref_count--;
+        }
+        delete it->second;
+        channels_.erase(it);
+    }
+}
+
+//---------------------------------------------------------------------
+// Software mixer
+//---------------------------------------------------------------------
+inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
+    // Clear output buffer
+    for (int i = 0; i < sample_count; i++) {
+        mix_buffer_[i] = 0;
+    }
+
+#if !USE_SDL
+    EnterCriticalSection(&lock_);
+#endif
+
+    // Mix all active channels
+    std::unordered_map<int, Channel*>::iterator it = channels_.begin();
+    while (it != channels_.end()) {
+        Channel* ch = it->second;
+        if (!ch->is_playing) {
+            ++it;
+            continue;
+        }
+
+        float vol = ch->volume / 1000.0f;
+        int bytes_per_sample = (ch->wav->bits_per_sample / 8);
+        int samples_to_mix = sample_count;
+
+        // Reduce mix count if channel data is insufficient
+        uint32_t remaining_bytes = ch->wav->size - ch->position;
+        uint32_t remaining_samples = remaining_bytes / bytes_per_sample;
+        if ((uint32_t)samples_to_mix > remaining_samples) {
+            samples_to_mix = (int)remaining_samples;
+        }
+
+        // Mix samples
+        for (int i = 0; i < samples_to_mix; i++) {
+            int16_t sample = ReadSample(ch);
+            ch->position += bytes_per_sample;
+
+            // Apply volume
+            int32_t adjusted_sample = (int32_t)(sample * vol);
+            mix_buffer_[i] += (int16_t)adjusted_sample;
+        }
+
+        // Handle loop/end logic
+        if (ch->position >= ch->wav->size) {
+            if (ch->repeat == 0) {
+                // Infinite loop
+                ch->position = 0;
+            } else if (ch->repeat > 1) {
+                // Finite loop
+                ch->position = 0;
+                ch->repeat--;
+            } else {
+                // Playback finished
+                GS_DEBUG_PRINT("Channel %d finished playback", ch->id);
+                ch->is_playing = false;
+                ch->wav->ref_count--;
+                int ch_id = ch->id;
+                ++it; // Advance iterator before erasing
+                ReleaseChannel(ch_id);
+                continue;
+            }
+        }
+
+        ++it;
+    }
+
+#if !USE_SDL
+    LeaveCriticalSection(&lock_);
+#endif
+
+    // Limiter processing (prevent overflow)
+    int32_t temp_buffer[BUFFER_SAMPLES];
+    for (int i = 0; i < sample_count; i++) {
+        temp_buffer[i] = mix_buffer_[i];
+    }
+    ClampAndConvert(temp_buffer, output_buffer, sample_count);
+}
+
+//---------------------------------------------------------------------
+// Audio callback (waveOut)
+//---------------------------------------------------------------------
+#if !USE_SDL
+inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg, 
+                                                 DWORD_PTR dwInstance, 
+                                                 DWORD_PTR dwParam1, 
+                                                 DWORD_PTR dwParam2) {
+    GS_DEBUG_PRINT("Callback: uMsg=%u", uMsg);
+    if (uMsg != WOM_DONE) return;
+
+    GameSound* sound = (GameSound*)dwInstance;
+    
+    // Check if we're closing - if so, don't process further
+    if (sound->closing_) {
+        GS_DEBUG_PRINT("Callback: closing flag set, exiting early");
+        return;
+    }
+    
+    WAVEHDR* hdr = (WAVEHDR*)dwParam1;
+
+    GS_DEBUG_PRINT("Callback: WOM_DONE received");
+
+    // Mix audio data
+    int samples = BUFFER_SAMPLES;
+    int16_t output_buffer[BUFFER_SAMPLES];
+    sound->MixAudio(output_buffer, samples);
+    
+    // Check again after mixing (in case closing started during mix)
+    if (sound->closing_) {
+        GS_DEBUG_PRINT("Callback: closing flag set after mix, exiting early");
+        return;
+    }
+
+    // Prepare and write next buffer
+    memcpy(hdr->lpData, output_buffer, samples * sizeof(int16_t));
+    hdr->dwBufferLength = samples * sizeof(int16_t);
+    hdr->dwFlags = 0;
+    waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
+    waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
+    GS_DEBUG_PRINT("Callback: buffer submitted");
+}
+#endif
+
+//---------------------------------------------------------------------
+// Audio callback (SDL2)
+//---------------------------------------------------------------------
+#if USE_SDL
+inline void SDLCALL GameSound::SDLAudioCallback(void* userdata, Uint8* stream, int len) {
+    GameSound* sound = (GameSound*)userdata;
+    int samples = len / sizeof(int16_t);
+    int16_t output_buffer[BUFFER_SAMPLES];
+    sound->MixAudio(output_buffer, samples);
+    memcpy(stream, output_buffer, len);
+}
+#endif
+
+//---------------------------------------------------------------------
+// Initialize audio backend
+//---------------------------------------------------------------------
+inline bool GameSound::InitAudioBackend() {
+#if USE_SDL
+    GS_DEBUG_PRINT("InitAudioBackend: SDL2");
+    SDL_AudioSpec desired;
+    memset(&desired, 0, sizeof(desired));
+    desired.freq = 44100;
+    desired.format = AUDIO_S16SYS;
+    desired.channels = 2;
+    desired.samples = BUFFER_SAMPLES;
+    desired.callback = SDLAudioCallback;
+    desired.userdata = this;
+
+    audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, &audio_spec_, 0);
+    if (audio_device_ == 0) {
+        GS_DEBUG_PRINT("  SDL_OpenAudioDevice failed: %s", SDL_GetError());
+        return false;
+    }
+
+    GS_DEBUG_PRINT("  SDL audio device opened, freq=%d", audio_spec_.freq);
+    SDL_PauseAudioDevice(audio_device_, 0); // Start playback
+    return true;
+#else
+    GS_DEBUG_PRINT("InitAudioBackend: waveOut");
+    // Setup audio format
+    wfx_.wFormatTag = WAVE_FORMAT_PCM;
+    wfx_.nSamplesPerSec = 44100;
+    wfx_.wBitsPerSample = 16;
+    wfx_.nChannels = 2;
+    wfx_.nBlockAlign = (wfx_.wBitsPerSample / 8) * wfx_.nChannels;
+    wfx_.nAvgBytesPerSec = wfx_.nSamplesPerSec * wfx_.nChannels;
+    wfx_.cbSize = 0;
+
+    // Open audio device
+    MMRESULT result = waveOutOpen(&h_wave_out_, WAVE_MAPPER, &wfx_, 
+                                   (DWORD_PTR)WaveOutCallback, 
+                                   (DWORD_PTR)this, CALLBACK_FUNCTION);
+    if (result != MMSYSERR_NOERROR) {
+        GS_DEBUG_PRINT("  waveOutOpen failed: error=%u", result);
+        h_wave_out_ = NULL;
+        return false;
+    }
+
+    GS_DEBUG_PRINT("  waveOut device opened");
+
+    // Prepare and write initial buffer
+    int samples = BUFFER_SAMPLES;
+    int16_t output_buffer[BUFFER_SAMPLES];
+    memset(output_buffer, 0, samples * sizeof(int16_t));
+
+    GS_DEBUG_PRINT("  waveOut: Allocating WAVEHDR...");
+    wave_hdr_ = new WAVEHDR();
+    memset(wave_hdr_, 0, sizeof(WAVEHDR));
+    wave_hdr_->lpData = (LPSTR)new char[samples * sizeof(int16_t)];
+    wave_hdr_->dwBufferLength = samples * sizeof(int16_t);
+    memcpy(wave_hdr_->lpData, output_buffer, samples * sizeof(int16_t));
+
+    GS_DEBUG_PRINT("  waveOut: Preparing header...");
+    MMRESULT prep_result = waveOutPrepareHeader(h_wave_out_, wave_hdr_, sizeof(WAVEHDR));
+    GS_DEBUG_PRINT("  waveOut: waveOutPrepareHeader returned: %u", prep_result);
+    
+    GS_DEBUG_PRINT("  waveOut: Writing buffer...");
+    MMRESULT write_result = waveOutWrite(h_wave_out_, wave_hdr_, sizeof(WAVEHDR));
+    GS_DEBUG_PRINT("  waveOut: waveOutWrite returned: %u", write_result);
+
+    GS_DEBUG_PRINT("  Initial buffer submitted");
+    return true;
+#endif
+}
+
+//---------------------------------------------------------------------
+// Shutdown audio backend
+//---------------------------------------------------------------------
+inline void GameSound::ShutdownAudioBackend() {
+#if USE_SDL
+    if (audio_device_) {
+        GS_DEBUG_PRINT("  SDL: Closing audio device...");
+        SDL_CloseAudioDevice(audio_device_);
+        GS_DEBUG_PRINT("  SDL: Audio device closed");
+        audio_device_ = 0;
+    }
+#else
+    if (h_wave_out_) {
+        GS_DEBUG_PRINT("  waveOut: Calling waveOutReset...");
+        MMRESULT reset_result = waveOutReset(h_wave_out_);
+        GS_DEBUG_PRINT("  waveOut: waveOutReset returned: %u", reset_result);
+        
+        GS_DEBUG_PRINT("  waveOut: Calling waveOutClose...");
+        MMRESULT close_result = waveOutClose(h_wave_out_);
+        GS_DEBUG_PRINT("  waveOut: waveOutClose returned: %u", close_result);
+        h_wave_out_ = NULL;
+    } else {
+        GS_DEBUG_PRINT("  waveOut: h_wave_out_ is NULL, skipping reset/close");
+    }
+    
+    if (wave_hdr_) {
+        GS_DEBUG_PRINT("  waveOut: Cleaning up WAVEHDR...");
+        if (wave_hdr_->lpData) {
+            delete[] wave_hdr_->lpData;
+            wave_hdr_->lpData = NULL;
+        }
+        delete wave_hdr_;
+        wave_hdr_ = NULL;
+        GS_DEBUG_PRINT("  waveOut: WAVEHDR cleaned");
+    }
+#endif
+}
+
+//---------------------------------------------------------------------
+// Public API: PlayWAV
+//---------------------------------------------------------------------
+inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
+    if (!initialized_) return -2;
+
+    // Load or get cached WAV
+    WavData* wav = LoadOrCacheWAV(filename);
+    if (!wav) return -1;
+
+    // Allocate new channel
+    int ch_id = AllocateChannel();
+    Channel* ch = new Channel();
+    ch->id = ch_id;
+    ch->wav = wav;
+    ch->position = 0;
+    ch->repeat = repeat;
+    ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    ch->is_playing = true;
+
+#if !USE_SDL
+    EnterCriticalSection(&lock_);
+#endif
+    channels_[ch_id] = ch;
+#if !USE_SDL
+    LeaveCriticalSection(&lock_);
+#endif
+
+    return ch_id;
+}
+
+//---------------------------------------------------------------------
+// Public API: StopWAV
+//---------------------------------------------------------------------
+inline int GameSound::StopWAV(int channel) {
+    if (channels_.find(channel) == channels_.end()) return -1;
+
+#if !USE_SDL
+    EnterCriticalSection(&lock_);
+#endif
+    ReleaseChannel(channel);
+#if !USE_SDL
+    LeaveCriticalSection(&lock_);
+#endif
+    return 0;
+}
+
+//---------------------------------------------------------------------
+// Public API: IsPlaying
+//---------------------------------------------------------------------
+inline int GameSound::IsPlaying(int channel) {
+    std::unordered_map<int, Channel*>::iterator it = channels_.find(channel);
+    if (it == channels_.end()) return -1;
+    return it->second->is_playing ? 1 : 0;
+}
+
+//---------------------------------------------------------------------
+// Public API: SetVolume
+//---------------------------------------------------------------------
+inline int GameSound::SetVolume(int channel, int volume) {
+    std::unordered_map<int, Channel*>::iterator it = channels_.find(channel);
+    if (it == channels_.end()) return -1;
+
+    it->second->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    return 0;
+}
+
+//---------------------------------------------------------------------
+// Public API: StopAll
+//---------------------------------------------------------------------
+inline void GameSound::StopAll() {
+#if !USE_SDL
+    EnterCriticalSection(&lock_);
+#endif
+    std::vector<int> channel_ids;
+    for (std::unordered_map<int, Channel*>::iterator it = channels_.begin();
+         it != channels_.end(); ++it) {
+        channel_ids.push_back(it->first);
+    }
+    for (size_t i = 0; i < channel_ids.size(); i++) {
+        ReleaseChannel(channel_ids[i]);
+    }
+    channels_.clear();
+#if !USE_SDL
+    LeaveCriticalSection(&lock_);
+#endif
+}
+
+#endif // GAMESOUND_IMPLEMENTATION
+#endif // GAMESOUND_H

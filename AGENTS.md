@@ -8,6 +8,7 @@
 - docs/                  # GameLib.h API 文档
   - manual.md            # GameLib.h 公开 API 接口说明
   - quickref.md          # GameLib.h 快速 API 参考
+  - GameSound.md         # GameSound.h 技术规格文档
 - <GameName>/            # 各游戏项目目录（如 GeometryWars/）
   - assets/              # 游戏专属音效资源
   - design.md            # 游戏设计文档（玩法、敌人、计分、操控）
@@ -16,6 +17,9 @@
   - <game>.cpp           # 游戏源码
 - GameLib.h              # GameLib 游戏库（Win32 版，供参考）
 - GameLib.SDL.h          # GameLib 游戏库（SDL 版，供参考）
+- GameSound.h            # GameSound 多声道音频播放库
+- tools/                 # 工具演示程序
+  - sound_demo.cpp       # GameSound.h 音效演示程序
 ```
 
 ## Documentation
@@ -24,8 +28,9 @@
 |------|------|-----------|
 | `docs/manual.md` | GameLib.h 公开 API 接口说明 | 开发新游戏或查阅 API 时 |
 | `docs/quickref.md` | GameLib.h 快速 API 列表 | 开发新游戏时快速查阅 |
+| `docs/GameSound.md` | GameSound.h 技术规格文档 | 使用多声道音频播放时 |
 
-以上文档是 GameLib.h API 的权威来源，开发游戏时应优先参考。
+以上文档是 GameLib.h 和 GameSound.h API 的权威来源，开发游戏时应优先参考。
 
 ## Games
 
@@ -78,6 +83,15 @@ g++ -o <game>.exe <game>.cpp -mwindows
 cd GeometryWars
 g++ -o geometry.exe geometry.cpp -mwindows
 ```
+
+### 示例：编译音效演示
+
+```bash
+cd tools
+g++ -o sound_demo.exe sound_demo.cpp -mwindows -lwinmm
+```
+
+**注意**：GameSound.h 需要链接 `-lwinmm` 库。
 
 ## Code Constraints
 
