@@ -133,6 +133,13 @@ public:
     // Stop all channels
     void StopAll();
 
+    // Set master volume (affects all channels, 0-1000)
+    // Returns: 0 on success
+    int SetMasterVolume(int volume);
+
+    // Get master volume (0-1000)
+    int GetMasterVolume() const;
+
 #ifdef GAMESOUND_IMPLEMENTATION
     // Check if audio backend is initialized
     bool IsInitialized() const { return initialized_; }
@@ -172,6 +179,7 @@ private:
     std::unordered_map<int, Channel*> channels_;
     int64_t next_channel_id_;
     bool initialized_;
+    int master_volume_;  // Global volume multiplier (0-1000)
 
 #if USE_SDL
     SDL_AudioDeviceID audio_device_;
@@ -185,7 +193,16 @@ private:
     volatile bool closing_; // Flag to signal callback to stop
 #endif
 
-    static const int BUFFER_SAMPLES = 4096;
+    // Buffer size configuration (can be overridden before #include)
+    //  256  = ~6ms   latency (high CPU usage)
+    //  512  = ~12ms  latency (balanced)
+    // 1024  = ~23ms  latency (low CPU, default)
+    // 2048  = ~46ms  latency (very low CPU)
+#ifndef GAMESOUND_BUFFER_SAMPLES
+    #define GAMESOUND_BUFFER_SAMPLES 1024
+#endif
+
+    static const int BUFFER_SAMPLES = GAMESOUND_BUFFER_SAMPLES;
     int32_t mix_buffer_[BUFFER_SAMPLES];  // int32_t to prevent overflow during mixing
 
     // Internal methods
@@ -228,7 +245,7 @@ private:
 // Constructor & Destructor
 //---------------------------------------------------------------------
 inline GameSound::GameSound() 
-    : next_channel_id_(1), initialized_(false)
+    : next_channel_id_(1), initialized_(false), master_volume_(1000)
 #if USE_SDL
     , audio_device_(0)
 #else
@@ -506,9 +523,20 @@ inline GameSound::WavData* GameSound::LoadOrCacheWAV(const char* filename) {
 // Allocate unique channel ID
 //---------------------------------------------------------------------
 inline int GameSound::AllocateChannel() {
+    // Wrap around if exceeds 32700 to prevent int overflow
+    if (next_channel_id_ > 32700) {
+        next_channel_id_ = 1;
+    }
+    
+    // Find unused channel ID
     while (channels_.count((int)next_channel_id_)) {
         next_channel_id_++;
+        // Safety check: if all IDs are used, wrap again
+        if (next_channel_id_ > 32700) {
+            next_channel_id_ = 1;
+        }
     }
+    
     int id = (int)next_channel_id_;
     next_channel_id_++;
     return id;
@@ -550,7 +578,7 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
             continue;
         }
 
-        float vol = ch->volume / 1000.0f;
+        float vol = (ch->volume / 1000.0f) * (master_volume_ / 1000.0f);
         
         // bytes_per_frame = channels * bytes_per_sample
         // For stereo 16-bit: 2 * 2 = 4 bytes per frame
@@ -564,16 +592,34 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
         // Reduce mix count if channel data is insufficient
         uint32_t remaining_bytes = ch->wav->size - ch->position;
         uint32_t remaining_frames = remaining_bytes / bytes_per_frame;
-        if ((uint32_t)frames_to_mix > remaining_frames) {
+        
+        GS_DEBUG_PRINT("MixAudio: ch=%d, position=%u, size=%u, remaining_frames=%u, frames_to_mix=%d",
+                       ch->id, ch->position, ch->wav->size, remaining_frames, frames_to_mix);
+        
+        // If less than one frame remains, skip to end handling
+        if (remaining_frames == 0) {
+            frames_to_mix = 0;
+            GS_DEBUG_PRINT("MixAudio: ch=%d, no remaining frames, setting frames_to_mix=0", ch->id);
+        } else if ((uint32_t)frames_to_mix > remaining_frames) {
             frames_to_mix = (int)remaining_frames;
+            GS_DEBUG_PRINT("MixAudio: ch=%d, limiting frames_to_mix to %d", ch->id, frames_to_mix);
         }
 
         // Mix samples - one frame at a time
         for (int frame = 0; frame < frames_to_mix; frame++) {
             // Read each channel in the frame
             for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
+                // For stereo interleaved data: LRLRLR...
+                // Left channel samples are at: 0, 4, 8, ... (byte offset)
+                // Right channel samples are at: 2, 6, 10, ... (byte offset)
+                // So for channel ch_idx, we read from: ch->position + (ch_idx * bytes_per_sample)
+                uint32_t frame_pos = ch->position + (ch_idx * bytes_per_sample);
+                
+                // Temporarily set position for ReadSample
+                uint32_t saved_pos = ch->position;
+                ch->position = frame_pos;
                 int16_t sample = ReadSample(ch);
-                ch->position += bytes_per_sample;
+                ch->position = saved_pos;
                 
                 // Calculate output index based on channel
                 int out_idx = frame * ch->wav->channels + ch_idx;
@@ -582,10 +628,14 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
                 int32_t adjusted_sample = (int32_t)(sample * vol);
                 mix_buffer_[out_idx] += adjusted_sample;
             }
+            // Advance position by one complete frame (all channels)
+            ch->position += bytes_per_frame;
         }
 
         // Handle loop/end logic
         if (ch->position >= ch->wav->size) {
+            printf("[DEBUG] Channel %d: position=%u >= size=%u, repeat=%d\n", 
+                   ch->id, ch->position, ch->wav->size, ch->repeat);
             if (ch->repeat == 0) {
                 // Infinite loop
                 ch->position = 0;
@@ -878,6 +928,21 @@ inline void GameSound::StopAll() {
 #if !USE_SDL
     LeaveCriticalSection(&lock_);
 #endif
+}
+
+//---------------------------------------------------------------------
+// Public API: SetMasterVolume
+//---------------------------------------------------------------------
+inline int GameSound::SetMasterVolume(int volume) {
+    master_volume_ = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    return 0;
+}
+
+//---------------------------------------------------------------------
+// Public API: GetMasterVolume
+//---------------------------------------------------------------------
+inline int GameSound::GetMasterVolume() const {
+    return master_volume_;
 }
 
 #endif // GAMESOUND_IMPLEMENTATION
