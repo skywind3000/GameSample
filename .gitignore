@@ -39,3 +39,23 @@
 
 # debug information files
 *.dwo
+
+/.vscode/*
+/.qoder/*
+/.opencode/*
+/.ferrite/*
+/.claude/*
+/scratch/*
+
+/nul
+/build/*
+/assets/*.py
+/assets/**/*.py
+/assets/temp/*
+/assets/workshop/*
+
+*.zip
+*.rar
+*.7z
+*.xz
+*.gz
