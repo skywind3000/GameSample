@@ -24,7 +24,8 @@ public:
     int StopWAV(int channel);
 
     // 检查 channel 是否正在播放
-    // 返回值: 1 正在播放，0 未播放，-1 channel 不存在
+    // 返回值: 1 正在播放，0 未播放，-1 channel 不存在（已释放）
+    // 注意：播放结束后 channel 自动释放，IsPlaying 返回 -1 而非 0
     int IsPlaying(int channel);
 
     // 动态调整单个 channel 音量 (0-1000)
@@ -42,6 +43,15 @@ public:
     int GetMasterVolume() const;
 };
 ```
+
+### IsPlaying 返回值注意事项
+
+`IsPlaying` 返回三态值：
+- `1`：channel 正在播放
+- `0`：channel 存在但未播放（理论上不会出现，因为未播放的 channel 会自动释放）
+- `-1`：channel 已不存在（播放结束后自动释放）
+
+判断播放是否结束应使用 `IsPlaying(ch) != 1`，而非 `!IsPlaying(ch)`，因为 `-1` 是 truthy 值，`!(-1) == 0` 不会触发结束条件。
 
 ## 架构设计
 
@@ -130,54 +140,73 @@ wfx.wFormatTag = WAVE_FORMAT_PCM;
 wfx.nSamplesPerSec = 44100;
 wfx.wBitsPerSample = 16;
 wfx.nChannels = 2;  // 立体声输出
-wfx.nBlockAlign = (wfx.wBitsPerSample / 8) * wfx.nChannels;
-wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;  // 注意：乘以 nBlockAlign 而非 nChannels
+wfx.nBlockAlign = (wfx.wBitsPerSample / 8) * wfx.nChannels;  // = 4
+wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;  // = 176400
 
 // 2. 打开音频设备（回调模式）
 waveOutOpen(&h_wave_out_, WAVE_MAPPER, &wfx, 
             (DWORD_PTR)WaveOutCallback, (DWORD_PTR)this, CALLBACK_FUNCTION);
 
 // 3. 准备并提交双缓冲区
-WAVEHDR* wave_hdr_[2];
-volatile bool closing_;  // 析构时通知回调退出
-
 for (int i = 0; i < 2; i++) {
-    wave_hdr_[i] = new WAVEHDR();
-    wave_hdr_[i]->lpData = new char[buffer_bytes];
-    wave_hdr_[i]->dwBufferLength = buffer_bytes;
-    memset(wave_hdr_[i]->lpData, 0, buffer_bytes);
+    wave_hdr_[i]->lpData = new char[BUFFER_BYTES];
+    wave_hdr_[i]->dwBufferLength = BUFFER_BYTES;
+    memset(wave_hdr_[i]->lpData, 0, BUFFER_BYTES);
     waveOutPrepareHeader(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
     waveOutWrite(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
 }
 ```
 
+#### 缓冲区大小设计
+
+**关键概念：帧 vs 样本**
+
+- **帧（frame）**：一个时间点的所有声道数据。立体声一帧 = L + R = 2 个 int16_t = 4 字节
+- **样本（sample）**：单个声道的一个 int16_t 值
+
+`GAMESOUND_BUFFER_SAMPLES` 宏定义的是**帧数**（时间点数量），不是 int16_t 数量。
+
+相关常量：
+```cpp
+BUFFER_FRAMES      = GAMESOUND_BUFFER_SAMPLES       // 帧数（时间点）
+OUTPUT_CHANNELS    = 2                                // 立体声输出
+BUFFER_TOTAL_SAMPLES = BUFFER_FRAMES * OUTPUT_CHANNELS  // 总 int16_t 数量
+BUFFER_BYTES       = BUFFER_TOTAL_SAMPLES * sizeof(int16_t)  // 字节数
+```
+
+| GAMESOUND_BUFFER_SAMPLES | 帧数 | 总 int16_t | 字节数 | 每缓冲区时长 | 延迟 | 说明 |
+|---|---|---|---|---|---|---|
+| 512 | 512 | 1024 | 2048 | ~12ms | ~23ms | 可能断续 |
+| 1024 | 1024 | 2048 | 4096 | ~23ms | ~46ms | 可能断续 |
+| 2048 | 2048 | 4096 | 8192 | ~46ms | ~92ms | 稳定（默认） |
+| 4096 | 4096 | 8192 | 16384 | ~93ms | ~186ms | 很稳定，高延迟 |
+
+**为什么默认值是 2048 帧（46ms）**：waveOut CALLBACK_FUNCTION 模式下，回调间隔约等于单缓冲区播放时长。如果缓冲区时长小于回调间隔，waveOut 在等待下一个缓冲区时会产生静音间隙（断续感 + 播放时间拉长）。实测 512/1024 帧的缓冲区会导致约 2 倍播放时长，2048 帧以上可消除此问题。
+
 #### 双缓冲区设计
 
-**为什么需要双缓冲区**：单缓冲区在播放完成后，需要等待回调函数准备下一个缓冲区，产生几毫秒的播放间隙（"空档"）。双缓冲区让一个缓冲区播放时，另一个在回调中填充，实现无缝衔接。
+**为什么需要双缓冲区**：单缓冲区在播放完成后，需要等待回调函数准备下一个缓冲区，产生播放间隙。双缓冲区让一个缓冲区播放时，另一个在回调中填充，实现无缝衔接。
 
 ```cpp
-// 回调函数 - 复用已完成的缓冲区
 void CALLBACK WaveOutCallback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance, 
                                DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
     if (uMsg != WOM_DONE) return;
 
     GameSound* sound = (GameSound*)dwInstance;
     
-    // 检查关闭标志，提前退出（防止析构死锁）
     if (sound->closing_) return;
     
     WAVEHDR* hdr = (WAVEHDR*)dwParam1;  // 已播放完的缓冲区
 
     // 混音
-    int16_t output_buffer[BUFFER_SAMPLES];
-    sound->MixAudio(output_buffer, BUFFER_SAMPLES);
+    int16_t output_buffer[BUFFER_TOTAL_SAMPLES];
+    sound->MixAudio(output_buffer, BUFFER_TOTAL_SAMPLES);
     
-    // 再次检查关闭标志
     if (sound->closing_) return;
 
     // 复用缓冲区
-    memcpy(hdr->lpData, output_buffer, BUFFER_SAMPLES * sizeof(int16_t));
-    hdr->dwBufferLength = BUFFER_SAMPLES * sizeof(int16_t);
+    memcpy(hdr->lpData, output_buffer, BUFFER_BYTES);
+    hdr->dwBufferLength = BUFFER_BYTES;
     hdr->dwFlags = 0;
     waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
     waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
@@ -187,7 +216,7 @@ void CALLBACK WaveOutCallback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
 **关键点**：
 - waveOut 回调参数 `dwParam1` 就是已播放完的 `WAVEHDR` 指针
 - 两个缓冲区交替播放，waveOut 自动管理
-- 延迟计算：`BUFFER_SAMPLES / 44100 ≈ 23ms`（单缓冲区），双缓冲总延迟约 46ms，实际感知约 23ms
+- 延迟计算：双缓冲总延迟 ≈ 2 × 单缓冲区时长 ≈ 92ms（默认 2048 帧）
 
 #### 软件混音器设计
 
@@ -195,21 +224,16 @@ void CALLBACK WaveOutCallback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
 
 ```cpp
 // 全局混音缓冲区（int32_t 防止累加溢出）
-// 可通过 GAMESOUND_BUFFER_SAMPLES 宏配置（在 #include 之前定义）
-//  256  = ~6ms   延迟（高 CPU 占用）
-//  512  = ~12ms  延迟（平衡）
-// 1024  = ~23ms  延迟（低 CPU，默认）
-// 2048  = ~46ms  延迟（极低 CPU）
-#ifndef GAMESOUND_BUFFER_SAMPLES
-    #define GAMESOUND_BUFFER_SAMPLES 1024
-#endif
-
-static const int BUFFER_SAMPLES = GAMESOUND_BUFFER_SAMPLES;
-int32_t mix_buffer_[BUFFER_SAMPLES];     // int32_t 防止多声道累加溢出
+// 大小 = BUFFER_TOTAL_SAMPLES = BUFFER_FRAMES * OUTPUT_CHANNELS
+int32_t mix_buffer_[BUFFER_TOTAL_SAMPLES];
 
 void MixAudio(int16_t* output_buffer, int sample_count) {
+    // sample_count = BUFFER_TOTAL_SAMPLES（总 int16_t 数量 = 帧数 × 声道数）
+
     // 清空混音缓冲区
-    memset(mix_buffer_, 0, sample_count * sizeof(int32_t));
+    for (int i = 0; i < sample_count; i++) {
+        mix_buffer_[i] = 0;
+    }
 
     EnterCriticalSection(&lock_);
 
@@ -220,33 +244,37 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
         // 音量 = 单个 channel 音量 × 全局音量
         float vol = (ch->volume / 1000.0f) * (master_volume_ / 1000.0f);
         
-        // 计算每帧字节数（所有声道）
-        int bytes_per_sample = ch->wav->bits_per_sample / 8;      // 每个声道 2 字节
-        int bytes_per_frame = bytes_per_sample * ch->wav->channels;  // 立体声 = 4 字节
+        int bytes_per_sample = ch->wav->bits_per_sample / 8;      // 2
+        int bytes_per_frame = bytes_per_sample * ch->wav->channels;  // 4
         
-        // 计算要混音的帧数
+        // frames_to_mix = 总样本数 / 声道数
         int frames_to_mix = sample_count / ch->wav->channels;
         
         // 检查剩余数据是否足够
         uint32_t remaining_bytes = ch->wav->size - ch->position;
         uint32_t remaining_frames = remaining_bytes / bytes_per_frame;
         if (remaining_frames == 0) {
-            frames_to_mix = 0;  // 不足一帧，跳过混音
+            frames_to_mix = 0;
         } else if ((uint32_t)frames_to_mix > remaining_frames) {
             frames_to_mix = (int)remaining_frames;
         }
 
-        // 对每一帧，读取所有声道
+        // 逐帧逐声道混音（直接从交错数据读取，不修改 position）
         for (int frame = 0; frame < frames_to_mix; frame++) {
+            uint32_t frame_start = ch->position + frame * bytes_per_frame;
             for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
-                int16_t sample = ReadSample(ch);
-                ch->position += bytes_per_sample;
-                
-                // 输出索引 = 帧号 × 声道数 + 声道索引
+                uint32_t sample_pos = frame_start + ch_idx * bytes_per_sample;
+                int16_t sample = 0;
+                if (sample_pos + 1 < ch->wav->size) {
+                    sample = (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[sample_pos] |
+                                       ((uint16_t)(uint8_t)ch->wav->buffer[sample_pos + 1] << 8));
+                }
                 int out_idx = frame * ch->wav->channels + ch_idx;
                 mix_buffer_[out_idx] += (int32_t)(sample * vol);
             }
         }
+        // 一次性推进 position
+        ch->position += frames_to_mix * bytes_per_frame;
 
         // 处理循环/结束逻辑
         if (ch->position >= ch->wav->size) {
@@ -265,26 +293,7 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
 
     LeaveCriticalSection(&lock_);
 
-    // 限幅处理（int32_t → int16_t）
     ClampAndConvert(mix_buffer_, output_buffer, sample_count);
-}
-```
-
-**读取样本（注意类型转换）**：
-
-```cpp
-int16_t ReadSample(Channel* ch) {
-    uint32_t pos = ch->position;
-    if (pos >= ch->wav->size) return 0;
-
-    if (ch->wav->bits_per_sample == 16) {
-        // 注意：必须 cast 到 uint8_t 防止符号扩展
-        return (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[pos] | 
-                          ((uint16_t)(uint8_t)ch->wav->buffer[pos + 1] << 8));
-    } else if (ch->wav->bits_per_sample == 8) {
-        return (int16_t)((ch->wav->buffer[pos] - 128) << 8);
-    }
-    return 0;
 }
 ```
 
@@ -303,7 +312,7 @@ int16_t ReadSample(Channel* ch) {
     
     // 2. 停止音频设备
     waveOutReset(h_wave_out_);
-    Sleep(50);  // 给回调线程时间退出
+    Sleep(50);
     waveOutClose(h_wave_out_);
     
     // 3. 清理缓冲区
@@ -314,7 +323,7 @@ int16_t ReadSample(Channel* ch) {
         }
     }
     
-    // 4. 清理 channel 和缓存
+    // 4. 清理 channel 和缓存（回调已停止，无需加锁）
     for (auto& pair : channels_) delete pair.second;
     channels_.clear();
     for (auto& pair : wav_cache_) delete pair.second;
@@ -385,7 +394,7 @@ WavData* ConvertToTargetFormat(WavData* src) {
             uint32_t idx = (uint32_t)src_index;
             double frac = src_index - idx;
             int16_t s0 = decoded[idx * src->channels + ch];
-            int16_t s1 = (idx + 1 < samples_per_channel) ? 
+            int16_t s1 = (idx + 1 < samples_per_component) ? 
                          decoded[(idx + 1) * src->channels + ch] : s0;
             resampled[i * src->channels + ch] = (int16_t)(s0 * (1.0 - frac) + s1 * frac);
             src_index += ratio;
@@ -422,16 +431,35 @@ WavData* LoadWAVFromFile(const char* filename) {
 
     // 验证 RIFF/WAVE header
     // 解析 format chunk（注意：必须 cast 到 uint8_t 防止符号扩展）
-    uint16_t audio_format = (uint16_t)(header[20] | ((uint8_t)header[21] << 8));
+    uint16_t audio_format = (uint16_t)(header[20] | (header[21] << 8));
     uint16_t channels = (uint16_t)((uint8_t)header[22] | ((uint8_t)header[23] << 8));
     uint32_t sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) | 
                                        ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
     uint16_t bits_per_sample = (uint16_t)((uint8_t)header[34] | ((uint8_t)header[35] << 8));
 
-    // 查找 data chunk
+    // 查找 data chunk（跳过可能的中间 chunk）
+    fseek(f, 12, SEEK_SET);
+    while (!found_data) {
+        char chunk_id[4];
+        uint32_t chunk_size;
+        fread(chunk_id, 1, 4, f);
+        fread(&chunk_size, 4, 1, f);
+        if (chunk_id == "data") {
+            wav->size = chunk_size;
+            found_data = true;
+        } else {
+            fseek(f, chunk_size, SEEK_CUR);  // 跳过非 data chunk
+        }
+    }
+
     // 读取 PCM 数据
+    wav->buffer = new uint8_t[wav->size];
+    fread(wav->buffer, 1, wav->size, f);
+
     // 调用 ConvertToTargetFormat 转换
-    // 返回转换后的数据
+    WavData* converted = ConvertToTargetFormat(wav);
+    delete wav;
+    return converted;
 }
 ```
 
@@ -444,13 +472,15 @@ SDL_AudioSpec desired = {0};
 desired.freq = 44100;
 desired.format = AUDIO_S16SYS;
 desired.channels = 2;
-desired.samples = BUFFER_SAMPLES;
+desired.samples = BUFFER_FRAMES;       // SDL 的 samples 是帧数
 desired.callback = SDLAudioCallback;
 desired.userdata = this;
 
 audio_device_ = SDL_OpenAudioDevice(NULL, 0, &desired, NULL, 0);
 SDL_PauseAudioDevice(audio_device_, 0);  // 开始播放
 ```
+
+**注意**：SDL 的 `desired.samples` 是帧数（与 `GAMESOUND_BUFFER_SAMPLES` 含义一致），而 waveOut 的 `dwBufferLength` 是字节数（需要用 `BUFFER_BYTES`）。
 
 ## 错误处理
 
@@ -499,6 +529,13 @@ sound.SetVolume(bgm_ch, 300);  // BGM 音量 30%
 // 停止 BGM
 sound.StopWAV(bgm_ch);
 
+// 检查是否还在播放（注意返回值三态）
+if (sound.IsPlaying(explosion_ch) == 1) {
+    // 还在播放
+} else {
+    // 已结束（返回 -1 表示 channel 已释放，返回 0 表示未播放）
+}
+
 // 游戏结束时，停止所有音效
 sound.StopAll();
 ```
@@ -509,9 +546,10 @@ sound.StopAll();
 |------|------|
 | WAV 缓存 | 同名 WAV 只加载一次，引用计数管理 |
 | 混音性能 | O(N) 复杂度，N 为活跃 channel 数 |
-| 内存占用 | WAV 数据 + 混音缓冲区（约 32KB） |
+| 内存占用 | WAV 数据 + 混音缓冲区（2048帧 ≈ 16KB） |
 | 线程安全 | CRITICAL_SECTION 保护共享数据 |
-| 低延迟 | 双缓冲区（1024 样本），约 23ms 总延迟 |
+| 低延迟 | 双缓冲区（2048帧），约 92ms 总延迟 |
+| 播放时长精度 | 延迟 < 2%（2048帧缓冲区实测） |
 
 ## 实现约束
 
@@ -535,15 +573,27 @@ sound.StopAll();
 
 在包含 `GameSound.h` 之前定义为 1 以启用调试输出。
 
+## 缓冲区配置宏
+
+```cpp
+#ifndef GAMESOUND_BUFFER_SAMPLES
+#define GAMESOUND_BUFFER_SAMPLES 2048  // 默认 2048 帧
+#endif
+```
+
+在包含 `GameSound.h` 之前定义以自定义缓冲区大小。**注意：此值是帧数（时间点），不是 int16_t 数量。**
+
 ## 技术决策
 
 | 决策项 | 选择 | 原因 | 时间 |
 |--------|------|------|------|
 | 音频后端 | Windows waveOut API | 零外部依赖，低延迟，适合游戏 | 2026-04-19 |
 | 混音方式 | 软件混音 | 每个 channel 独立音量控制 | 2026-04-19 |
-| 缓冲区大小 | 1024 样本（int16_t） | 低延迟（23ms 双缓冲 @ 44100Hz） | 2026-04-19 |
+| 缓冲区大小 | 2048 帧（默认） | waveOut 回调间隔约等于单缓冲区时长，小于此值会产生断续 | 2026-04-19 |
+| 缓冲区单位 | 帧（frame）而非 int16_t | 44100Hz/stereo/16bit 下帧含义明确，避免混淆 | 2026-04-19 |
 | 缓冲模式 | 双缓冲区 | 避免单缓冲区的播放间隙 | 2026-04-19 |
 | 混音缓冲区类型 | int32_t | 防止多声道累加时溢出 | 2026-04-19 |
+| 混音读取方式 | 直接计算位置 | 避免临时修改 position 引发的副作用 | 2026-04-19 |
 | 重采样策略 | 加载时统一转换 | 混音器简化，运行时性能好 | 2026-04-19 |
 | 重采样算法 | 线性插值 | 简单高效，游戏音效足够 | 2026-04-19 |
 | 目标格式 | 44100Hz / 立体声 / 16-bit | 标准 CD 音质，waveOut 兼容 | 2026-04-19 |
@@ -554,6 +604,7 @@ sound.StopAll();
 | 析构安全 | volatile closing_ 标志 | 防止 waveOut 回调死锁 | 2026-04-19 |
 | 音量范围 | 0-1000 | 整数运算，避免浮点精度问题 | 2026-04-19 |
 | 全局音量 | master_volume_ 成员 | 一个接口控制所有 channel | 2026-04-19 |
+| IsPlaying 返回值 | 三态（1/0/-1） | 区分"播放中"/"未播放"/"不存在" | 2026-04-19 |
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
 | 编译兼容 | GCC 4.9.2 / C++11 | Dev-C++ 5 自带编译器 | 2026-04-19 |

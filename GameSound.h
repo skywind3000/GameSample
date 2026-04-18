@@ -194,16 +194,22 @@ private:
 #endif
 
     // Buffer size configuration (can be overridden before #include)
-    //  256  = ~6ms   latency (high CPU usage)
-    //  512  = ~12ms  latency (balanced)
-    // 1024  = ~23ms  latency (low CPU, default)
-    // 2048  = ~46ms  latency (very low CPU)
+    // Note: BUFFER_SAMPLES is the number of audio frames (time points),
+    // NOT the number of int16_t values.
+    // For 44100Hz/stereo/16bit output: each frame = 2 int16_t = 4 bytes
+    //  512  = ~12ms  latency (may stutter with waveOut callback mode)
+    // 1024  = ~23ms  latency (may stutter with waveOut callback mode)
+    // 2048  = ~46ms  latency (stable, default)
+    // 4096  = ~93ms  latency (very stable, higher latency)
 #ifndef GAMESOUND_BUFFER_SAMPLES
-    #define GAMESOUND_BUFFER_SAMPLES 1024
+    #define GAMESOUND_BUFFER_SAMPLES 2048
 #endif
 
-    static const int BUFFER_SAMPLES = GAMESOUND_BUFFER_SAMPLES;
-    int32_t mix_buffer_[BUFFER_SAMPLES];  // int32_t to prevent overflow during mixing
+    static const int BUFFER_FRAMES = GAMESOUND_BUFFER_SAMPLES;  // frames (time points)
+    static const int OUTPUT_CHANNELS = 2;                        // stereo output
+    static const int BUFFER_TOTAL_SAMPLES = BUFFER_FRAMES * OUTPUT_CHANNELS;  // total int16_t values
+    static const int BUFFER_BYTES = BUFFER_TOTAL_SAMPLES * sizeof(int16_t);   // bytes per buffer
+    int32_t mix_buffer_[BUFFER_TOTAL_SAMPLES];  // int32_t to prevent overflow during mixing
 
     // Internal methods
     int16_t ReadSample(Channel* ch);
@@ -607,35 +613,33 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
 
         // Mix samples - one frame at a time
         for (int frame = 0; frame < frames_to_mix; frame++) {
-            // Read each channel in the frame
+            // For stereo interleaved data: LRLRLR...
+            // Each frame in the buffer is: [L0, R0], [L1, R1], ...
+            // For channel ch_idx, the sample is at:
+            //   position + frame * bytes_per_frame + ch_idx * bytes_per_sample
+            uint32_t frame_start = ch->position + frame * bytes_per_frame;
             for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
-                // For stereo interleaved data: LRLRLR...
-                // Left channel samples are at: 0, 4, 8, ... (byte offset)
-                // Right channel samples are at: 2, 6, 10, ... (byte offset)
-                // So for channel ch_idx, we read from: ch->position + (ch_idx * bytes_per_sample)
-                uint32_t frame_pos = ch->position + (ch_idx * bytes_per_sample);
-                
-                // Temporarily set position for ReadSample
-                uint32_t saved_pos = ch->position;
-                ch->position = frame_pos;
-                int16_t sample = ReadSample(ch);
-                ch->position = saved_pos;
-                
+                uint32_t sample_pos = frame_start + ch_idx * bytes_per_sample;
+                int16_t sample = 0;
+                if (sample_pos + 1 < ch->wav->size) {
+                    // Read 16-bit sample directly from interleaved data
+                    sample = (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[sample_pos] |
+                                       ((uint16_t)(uint8_t)ch->wav->buffer[sample_pos + 1] << 8));
+                }
+
                 // Calculate output index based on channel
                 int out_idx = frame * ch->wav->channels + ch_idx;
-                
+
                 // Apply volume and accumulate
                 int32_t adjusted_sample = (int32_t)(sample * vol);
                 mix_buffer_[out_idx] += adjusted_sample;
             }
-            // Advance position by one complete frame (all channels)
-            ch->position += bytes_per_frame;
         }
-
+        // Advance position by all mixed frames
+        ch->position += frames_to_mix * bytes_per_frame;
+        
         // Handle loop/end logic
         if (ch->position >= ch->wav->size) {
-            printf("[DEBUG] Channel %d: position=%u >= size=%u, repeat=%d\n", 
-                   ch->id, ch->position, ch->wav->size, ch->repeat);
             if (ch->repeat == 0) {
                 // Infinite loop
                 ch->position = 0;
@@ -645,7 +649,6 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
                 ch->repeat--;
             } else {
                 // Playback finished
-                GS_DEBUG_PRINT("Channel %d finished playback", ch->id);
                 ch->is_playing = false;
                 ch->wav->ref_count--;
                 int ch_id = ch->id;
@@ -689,11 +692,11 @@ inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
 
     GS_DEBUG_PRINT("Callback: WOM_DONE received for hdr=%p", hdr);
 
-    // Mix audio data
-    int samples = BUFFER_SAMPLES;
-    int16_t output_buffer[BUFFER_SAMPLES];
-    sound->MixAudio(output_buffer, samples);
-    
+    // Mix audio data (total int16_t samples = frames * channels)
+    int total_samples = BUFFER_TOTAL_SAMPLES;
+    int16_t output_buffer[BUFFER_TOTAL_SAMPLES];
+    sound->MixAudio(output_buffer, total_samples);
+
     // Check again after mixing (in case closing started during mix)
     if (sound->closing_) {
         GS_DEBUG_PRINT("Callback: closing flag set after mix, exiting early");
@@ -701,8 +704,8 @@ inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
     }
 
     // Reuse the completed buffer - just update with new audio
-    memcpy(hdr->lpData, output_buffer, samples * sizeof(int16_t));
-    hdr->dwBufferLength = samples * sizeof(int16_t);
+    memcpy(hdr->lpData, output_buffer, BUFFER_BYTES);
+    hdr->dwBufferLength = BUFFER_BYTES;
     hdr->dwFlags = 0;
     waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
     waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
@@ -717,7 +720,7 @@ inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
 inline void SDLCALL GameSound::SDLAudioCallback(void* userdata, Uint8* stream, int len) {
     GameSound* sound = (GameSound*)userdata;
     int samples = len / sizeof(int16_t);
-    int16_t output_buffer[BUFFER_SAMPLES];
+    int16_t output_buffer[BUFFER_TOTAL_SAMPLES];
     sound->MixAudio(output_buffer, samples);
     memcpy(stream, output_buffer, len);
 }
@@ -734,7 +737,7 @@ inline bool GameSound::InitAudioBackend() {
     desired.freq = 44100;
     desired.format = AUDIO_S16SYS;
     desired.channels = 2;
-    desired.samples = BUFFER_SAMPLES;
+    desired.samples = BUFFER_FRAMES;
     desired.callback = SDLAudioCallback;
     desired.userdata = this;
 
@@ -771,15 +774,12 @@ inline bool GameSound::InitAudioBackend() {
     GS_DEBUG_PRINT("  waveOut device opened");
 
     // Prepare and submit initial buffers (double buffering)
-    int samples = BUFFER_SAMPLES;
-    int buffer_bytes = samples * sizeof(int16_t);
-    
     for (int i = 0; i < 2; i++) {
         wave_hdr_[i] = new WAVEHDR();
         memset(wave_hdr_[i], 0, sizeof(WAVEHDR));
-        wave_hdr_[i]->lpData = (LPSTR)new char[buffer_bytes];
-        wave_hdr_[i]->dwBufferLength = buffer_bytes;
-        memset(wave_hdr_[i]->lpData, 0, buffer_bytes);
+        wave_hdr_[i]->lpData = (LPSTR)new char[BUFFER_BYTES];
+        wave_hdr_[i]->dwBufferLength = BUFFER_BYTES;
+        memset(wave_hdr_[i]->lpData, 0, BUFFER_BYTES);
         
         MMRESULT prep = waveOutPrepareHeader(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
         GS_DEBUG_PRINT("  waveOut: Prepared buffer %d, result=%u", i, prep);
