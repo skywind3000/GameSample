@@ -134,6 +134,7 @@ public:
     //   -1  - file not found or load failed
     //   -2  - audio device not initialized
     //   -3  - memory allocation failed
+    //   -4  - channel limit reached (max 32 simultaneous sounds)
     int PlayWAV(const char* filename, int repeat = 1, int volume = 1000);
 
     // Stop a specific channel
@@ -211,6 +212,9 @@ private:
     CRITICAL_SECTION lock_;
     volatile bool closing_; // Flag to signal callback to stop
 #endif
+
+    // Maximum number of simultaneous channels
+    static const int MAX_CHANNELS = 32;
 
     // Buffer size configuration (can be overridden before #include)
     // Note: BUFFER_SAMPLES is the number of audio frames (time points),
@@ -548,11 +552,16 @@ inline GameSound::WavData* GameSound::LoadOrCacheWAV(const char* filename) {
 // Allocate unique channel ID
 //---------------------------------------------------------------------
 inline int GameSound::AllocateChannel() {
+    // Check channel limit
+    if ((int)channels_.size() >= MAX_CHANNELS) {
+        return 0;  // No more channels available
+    }
+
     // Wrap around if exceeds 32700 to prevent int overflow
     if (next_channel_id_ > 32700) {
         next_channel_id_ = 1;
     }
-    
+
     // Find unused channel ID
     while (channels_.count((int)next_channel_id_)) {
         next_channel_id_++;
@@ -561,7 +570,7 @@ inline int GameSound::AllocateChannel() {
             next_channel_id_ = 1;
         }
     }
-    
+
     int id = (int)next_channel_id_;
     next_channel_id_++;
     return id;
@@ -673,7 +682,6 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
             } else {
                 // Playback finished
                 ch->is_playing = false;
-                ch->wav->ref_count--;
                 int ch_id = ch->id;
                 ++it; // Advance iterator before erasing
                 ReleaseChannel(ch_id);
@@ -696,43 +704,29 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
 // Audio callback (waveOut)
 //---------------------------------------------------------------------
 #if !GAMESOUND_USE_SDL
-inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg, 
-                                                 DWORD_PTR dwInstance, 
-                                                 DWORD_PTR dwParam1, 
+inline void CALLBACK GameSound::WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
+                                                 DWORD_PTR dwInstance,
+                                                 DWORD_PTR dwParam1,
                                                  DWORD_PTR dwParam2) {
-    GS_DEBUG_PRINT("Callback: uMsg=%u", uMsg);
     if (uMsg != WOM_DONE) return;
 
     GameSound* sound = (GameSound*)dwInstance;
-    
-    // Check if we're closing - if so, don't process further
-    if (sound->closing_) {
-        GS_DEBUG_PRINT("Callback: closing flag set, exiting early");
-        return;
-    }
-    
+
+    if (sound->closing_) return;
+
     WAVEHDR* hdr = (WAVEHDR*)dwParam1;
 
-    GS_DEBUG_PRINT("Callback: WOM_DONE received for hdr=%p", hdr);
-
-    // Mix audio data (total int16_t samples = frames * channels)
     int total_samples = BUFFER_TOTAL_SAMPLES;
     int16_t output_buffer[BUFFER_TOTAL_SAMPLES];
     sound->MixAudio(output_buffer, total_samples);
 
-    // Check again after mixing (in case closing started during mix)
-    if (sound->closing_) {
-        GS_DEBUG_PRINT("Callback: closing flag set after mix, exiting early");
-        return;
-    }
+    if (sound->closing_) return;
 
-    // Reuse the completed buffer - just update with new audio
     memcpy(hdr->lpData, output_buffer, BUFFER_BYTES);
     hdr->dwBufferLength = BUFFER_BYTES;
     hdr->dwFlags = 0;
     waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
     waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
-    GS_DEBUG_PRINT("Callback: buffer %p resubmitted", hdr);
 }
 #endif
 
@@ -905,8 +899,9 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
     WavData* wav = LoadOrCacheWAV(filename);
     if (!wav) return -1;
 
-    // Allocate new channel
+    // Allocate new channel (returns 0 if limit reached)
     int ch_id = AllocateChannel();
+    if (ch_id == 0) return -4;  // Channel limit reached
     Channel* ch = new Channel();
     ch->id = ch_id;
     ch->wav = wav;
@@ -934,13 +929,20 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
 // Public API: StopWAV
 //---------------------------------------------------------------------
 inline int GameSound::StopWAV(int channel) {
-    if (channels_.find(channel) == channels_.end()) return -1;
-
 #if GAMESOUND_USE_SDL
     SDL_LockAudioDevice(audio_device_);
 #else
     EnterCriticalSection(&lock_);
 #endif
+    std::unordered_map<int, Channel*>::iterator it = channels_.find(channel);
+    if (it == channels_.end()) {
+#if GAMESOUND_USE_SDL
+        SDL_UnlockAudioDevice(audio_device_);
+#else
+        LeaveCriticalSection(&lock_);
+#endif
+        return -1;
+    }
     ReleaseChannel(channel);
 #if GAMESOUND_USE_SDL
     SDL_UnlockAudioDevice(audio_device_);
@@ -954,20 +956,45 @@ inline int GameSound::StopWAV(int channel) {
 // Public API: IsPlaying
 //---------------------------------------------------------------------
 inline int GameSound::IsPlaying(int channel) {
+#if GAMESOUND_USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
+    EnterCriticalSection(&lock_);
+#endif
     std::unordered_map<int, Channel*>::iterator it = channels_.find(channel);
-    if (it == channels_.end()) return -1;
-    return it->second->is_playing ? 1 : 0;
+    int result = -1;
+    if (it != channels_.end()) {
+        result = it->second->is_playing ? 1 : 0;
+    }
+#if GAMESOUND_USE_SDL
+    SDL_UnlockAudioDevice(audio_device_);
+#else
+    LeaveCriticalSection(&lock_);
+#endif
+    return result;
 }
 
 //---------------------------------------------------------------------
 // Public API: SetVolume
 //---------------------------------------------------------------------
 inline int GameSound::SetVolume(int channel, int volume) {
+#if GAMESOUND_USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
+    EnterCriticalSection(&lock_);
+#endif
     std::unordered_map<int, Channel*>::iterator it = channels_.find(channel);
-    if (it == channels_.end()) return -1;
-
-    it->second->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
-    return 0;
+    int result = -1;
+    if (it != channels_.end()) {
+        it->second->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+        result = 0;
+    }
+#if GAMESOUND_USE_SDL
+    SDL_UnlockAudioDevice(audio_device_);
+#else
+    LeaveCriticalSection(&lock_);
+#endif
+    return result;
 }
 
 //---------------------------------------------------------------------

@@ -93,6 +93,7 @@ struct WavData {
 - `PlayWAV` 时检查缓存，若已存在则直接复用，`ref_count++`
 - Channel 销毁时，对应 WavData 的 `ref_count--`
 - `GameSound` 析构时遍历缓存，强制释放所有 WavData
+- **设计选择**：WAV 缓存不做运行时驱逐，所有缓存数据在 GameSound 析构时统一释放。这是有意为之的简化设计——游戏场景下音效文件数量有限且生命周期与 GameSound 对象一致，运行时驱逐带来的复杂度（如判断何时安全释放、ref_count 为 0 但稍后可能再次播放同一文件）不值得收益。
 
 ### Channel 状态
 
@@ -109,6 +110,12 @@ struct Channel {
 };
 ```
 
+### Channel 数量限制
+
+- 最多同时播放 **32 个声音**（`MAX_CHANNELS = 32`）
+- `PlayWAV` 在 channel 数量达到上限时返回 `-4`
+- **原因**：32 个声道足以覆盖游戏常见场景（BGM + 多种音效同时播放），同时限制混音的计算量和削波风险
+
 ### Channel ID 分配策略
 
 - 使用单调递增计数器 `int64_t next_channel_id_`，初始值为 1
@@ -118,6 +125,9 @@ struct Channel {
 
 ```cpp
 int AllocateChannel() {
+    if ((int)channels_.size() >= MAX_CHANNELS) {
+        return 0;  // No more channels available
+    }
     if (next_channel_id_ > 32700) {
         next_channel_id_ = 1;
     }
@@ -292,7 +302,6 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
                 ch->repeat--;
             } else {
                 ch->is_playing = false;
-                ch->wav->ref_count--;
                 ReleaseChannel(ch->id);
             }
         }
@@ -573,6 +582,7 @@ void SDLCALL SDLAudioCallback(void* userdata, Uint8* stream, int len) {
 | `-1` | 文件不存在或加载失败 | 文件路径错误、格式不支持 |
 | `-2` | 音频设备未初始化 | `GameSound` 构造失败 |
 | `-3` | 内存分配失败 | WAV 文件过大 |
+| `-4` | Channel 数量达到上限 | 同时播放超过 32 个声音 |
 
 ## 编译说明
 
@@ -708,6 +718,7 @@ int main() {
 | WAV 解析 | 仅支持 PCM | 游戏音效都是 PCM，简化实现 | 2026-04-19 |
 | 声道 ID 分配 | 单调递增 + 回绕 | 避免短时间复用，防混淆 | 2026-04-19 |
 | 声道 ID 上限 | 32700 回绕 | 防止 int32 溢出 | 2026-04-19 |
+| 声道数量上限 | 32 (MAX_CHANNELS) | 32 足以覆盖游戏常见场景，限制混音计算量和削波风险 | 2026-04-19 |
 | 线程安全 | CRITICAL_SECTION | Windows 原生，比 mutex 轻量 | 2026-04-19 |
 | 析构安全 | volatile closing_ 标志 | 防止 waveOut 回调死锁 | 2026-04-19 |
 | 音量范围 | 0-1000 | 整数运算，避免浮点精度问题 | 2026-04-19 |
@@ -715,6 +726,7 @@ int main() {
 | IsPlaying 返回值 | 三态（1/0/-1） | 区分"播放中"/"未播放"/"不存在" | 2026-04-19 |
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
+| WAV 缓存驱逐 | 不驱逐，析构时统一释放 | 游戏音效数量有限且生命周期与 GameSound 一致，运行时驱逐增加复杂度不值得 | 2026-04-19 |
 | SDL2 头文件引入 | GameSound.h 自动包含 SDL.h，自动检测路径 | 支持 `<SDL2/SDL.h>` 和 `<SDL.h>` 两种路径，兼容不同平台和发行版 | 2026-04-19 |
 | SDL_MAIN_HANDLED | GameSound.h 自动定义 | 无需 -lmingw32 -lSDL2main，与 GameLib.SDL.h 兼容 | 2026-04-19 |
 | 跨平台后端选择 | Windows 默认 waveOut，其他平台默认 SDL2 | waveOut 零依赖适合 Windows；SDL2 是 Linux/macOS 唯一选项 | 2026-04-19 |
