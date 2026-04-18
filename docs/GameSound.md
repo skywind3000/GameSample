@@ -401,3 +401,164 @@ sound.StopAll();
 GameSound.h          # 头文件 + 实现（header-only 风格）
 docs/GameSound.md    # 本文档
 ```
+
+## 关键 Bug 修复记录
+
+> **重要**：以下 Bug 已在实现中修复，但在重新生成代码时必须注意，否则会 reintroduce 这些问题。
+
+### Bug 1: WAV 解析时 char 符号扩展导致采样率错误
+
+**症状**：`sample_rate=4294945860`（应为 44100 或 22050）
+
+**根因**：`char` 在 GCC 中默认是 signed，当 `header[26]` 或 `header[27]` 高位为 1 时，左移会导致符号扩展，将正值变成巨大的负数（显示为无符号大数）。
+
+**错误代码**：
+```cpp
+// 错误！char 符号扩展
+wav->sample_rate = (uint32_t)(header[24] | (header[25] << 8) | 
+                               (header[26] << 16) | (header[27] << 24));
+```
+
+**修复代码**：
+```cpp
+// 正确！先转换为 uint8_t 再移位
+wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) | 
+                               ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
+```
+
+**影响范围**：所有 WAV 头解析（`LoadWAVFromFile` 中的 `channels`、`sample_rate`、`bits_per_sample` 字段）。
+
+---
+
+### Bug 2: waveOut 回调线程导致析构函数死锁
+
+**症状**：关闭窗口时程序卡死，即使没有播放任何声音。
+
+**根因**：`waveOutReset()` 调用后，Windows 仍会向回调线程发送 `WOM_DONE` 消息。回调函数继续执行 `MixAudio()`，而 `MixAudio()` 会调用 `EnterCriticalSection(&lock_)`。如果析构函数已经执行到 `DeleteCriticalSection(&lock_)`，回调线程还在尝试获取锁，导致死锁。
+
+**时序分析**：
+```
+主线程:                    回调线程:
+---------                  ----------
+Destructor started
+  waveOutReset()  ──────────────────>  收到 WOM_DONE
+                                       MixAudio() 获取锁
+  waveOutClose()  (卡住等待)         锁未释放...
+  DeleteCriticalSection() ────────>  EnterCriticalSection() 死锁！
+```
+
+**修复方案**：
+
+1. **添加 `closing_` 标志**：
+```cpp
+volatile bool closing_;  // 信号：回调函数应停止处理
+```
+
+2. **回调函数检查标志**：
+```cpp
+void CALLBACK WaveOutCallback(...) {
+    GameSound* sound = (GameSound*)dwInstance;
+    
+    // 检查关闭标志，提前退出
+    if (sound->closing_) {
+        return;
+    }
+    
+    // ... 正常混音和提交 ...
+    
+    // MixAudio 之后再次检查
+    if (sound->closing_) {
+        return;
+    }
+}
+```
+
+3. **ShutdownAudioBackend 设置标志**：
+```cpp
+void ShutdownAudioBackend() {
+    if (h_wave_out_) {
+        // 在 waveOutReset 之前设置标志
+        closing_ = true;
+        
+        waveOutReset(h_wave_out_);
+        Sleep(50);  // 给回调线程时间退出
+        waveOutClose(h_wave_out_);
+    }
+}
+```
+
+4. **构造函数初始化**：
+```cpp
+GameSound::GameSound() 
+    : closing_(false)  // 必须初始化
+{
+}
+```
+
+**关键点**：
+- `closing_` 必须是 `volatile`，因为跨线程访问
+- 必须在 `waveOutReset()` **之前**设置标志
+- `Sleep(50)` 不是优雅的方案，但在 Windows waveOut API 下是必要的
+- 回调函数中至少检查两次标志（进入时和 `MixAudio` 后）
+
+---
+
+### Bug 3: 内联函数无法访问私有嵌套类型
+
+**症状**：编译错误 `'WavData' does not name a type`
+
+**根因**：当内联函数在类外定义时，如果函数体使用了类的私有嵌套类型（如 `WavData*`、`Channel*`），编译器可能无法正确解析类型。
+
+**错误代码**：
+```cpp
+class GameSound {
+private:
+    struct WavData { ... };
+    WavData* LoadWAVFromFile(const char* filename);
+};
+
+// 错误！在类外定义，无法访问私有嵌套类型
+inline GameSound::WavData* GameSound::LoadWAVFromFile(const char* filename) {
+    ...
+}
+```
+
+**修复方案**：将所有实现放在类内部，或使用 `#ifdef GAMESOUND_IMPLEMENTATION` 在类内部包含实现。
+
+**正确代码**：
+```cpp
+class GameSound {
+public:
+    ...
+#ifdef GAMESOUND_IMPLEMENTATION
+private:
+    struct WavData { ... };
+    
+    WavData* LoadWAVFromFile(const char* filename) {
+        // 实现在类内部
+        ...
+    }
+#endif
+};
+```
+
+---
+
+## 调试宏定义
+
+```cpp
+#ifndef GAMESOUND_DEBUG
+#define GAMESOUND_DEBUG 0  // 默认关闭
+#endif
+
+#define GS_DEBUG_PRINT(fmt, ...) do { \
+    if (GAMESOUND_DEBUG) printf("[GameSound] " fmt "\n", ##__VA_ARGS__); \
+} while(0)
+```
+
+**使用方式**：在包含 `GameSound.h` 之前定义为 1 以启用调试输出：
+```cpp
+#define GAMESOUND_DEBUG 1
+#define GAMESOUND_IMPLEMENTATION
+#include "GameSound.h"
+```
