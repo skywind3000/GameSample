@@ -474,12 +474,30 @@ static void powerupsDraw(GameLib &g) {
         int pr = (int)(p.r * pulseScale);
 
         uint32_t core, glow;
+        const char *label;
         if (p.type == 0) {
             core = COLOR_ARGB(255, 0, 255, 255);
             glow = COLOR_ARGB(80, 0, 200, 255);
+            label = "NUKE";
         } else {
             core = COLOR_ARGB(255, 255, 200, 50);
             glow = COLOR_ARGB(80, 255, 150, 0);
+            label = "ENERGY";
+        }
+        // Beacon rings: 2 outward-expanding pulse circles
+        float beaconPhase1 = (float)fmod(p.pulse * 0.8f, 2.0f);
+        float beaconPhase2 = (float)fmod(p.pulse * 0.8f + 1.0f, 2.0f);
+        if (beaconPhase1 < 1.5f) {
+            float expand1 = beaconPhase1 / 1.5f;
+            int ringR1 = (int)(p.r + expand1 * 30);
+            int ringA1 = (int)(120 * (1.0f - expand1));
+            g.DrawCircle(sx, sy, ringR1, COLOR_ARGB(ringA1, COLOR_GET_R(core), COLOR_GET_G(core), COLOR_GET_B(core)));
+        }
+        if (beaconPhase2 < 1.5f) {
+            float expand2 = beaconPhase2 / 1.5f;
+            int ringR2 = (int)(p.r + expand2 * 30);
+            int ringA2 = (int)(120 * (1.0f - expand2));
+            g.DrawCircle(sx, sy, ringR2, COLOR_ARGB(ringA2, COLOR_GET_R(core), COLOR_GET_G(core), COLOR_GET_B(core)));
         }
         g.FillCircle(sx, sy, pr * 2, glow);
         int pts[8] = {
@@ -490,6 +508,8 @@ static void powerupsDraw(GameLib &g) {
         };
         g.FillTriangle(pts[0], pts[1], pts[2], pts[3], pts[4], pts[5], core);
         g.FillTriangle(pts[2], pts[3], pts[4], pts[5], pts[6], pts[7], core);
+        // Label text above the diamond
+        g.DrawText(sx - (int)(strlen(label) * 3), sy - pr - 10, label, COLOR_ARGB(180, COLOR_GET_R(core), COLOR_GET_G(core), COLOR_GET_B(core)));
 
         if (p.life < 3.0f && (int)(p.pulse * 2) % 2 == 0) {
             g.FillCircle(sx, sy, pr * 2, COLOR_ARGB(40, 255, 255, 255));
