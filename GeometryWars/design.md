@@ -252,7 +252,7 @@ SCENE_TITLE (1) → SCENE_COMBAT (2) → SCENE_DEATH (3) → SCENE_GAME_OVER (4)
 
 ## 音效
 
-使用项目现有 `assets/` 下的资源（变体随机选择）：
+所有音效文件位于 `assets/` 目录下（变体随机选择）：
 
 | 事件 | 音效文件 | 说明 |
 |------|---------|------|

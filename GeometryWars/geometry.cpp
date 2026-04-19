@@ -112,12 +112,6 @@ static float dist(float x1, float y1, float x2, float y2) {
 }
 static void clamp(float &v, float lo, float hi) { if (v < lo) v = lo; if (v > hi) v = hi; }
 
-static const char *pathOf(const char *a, const char *b) {
-    FILE *f = fopen(a, "rb"); if (f) { fclose(f); return a; }
-    f = fopen(b, "rb"); if (f) { fclose(f); return b; }
-    return a;
-}
-
 // ============================================================
 // Floating Score Texts
 // ============================================================
@@ -845,28 +839,28 @@ int main() {
     bestTime = GameLib::LoadFloat(SAVE_FILE, "bestTime", 0.0f);
 
     // Resolve sound paths - use actual files in assets/ directory
-    sounds.shoot[0] = pathOf("assets/shoot-01.wav", "../assets/shoot-01.wav");
-    sounds.shoot[1] = pathOf("assets/shoot-02.wav", "../assets/shoot-02.wav");
-    sounds.shoot[2] = pathOf("assets/shoot-03.wav", "../assets/shoot-03.wav");
-    sounds.shoot[3] = pathOf("assets/shoot-04.wav", "../assets/shoot-04.wav");
+    sounds.shoot[0] = "assets/shoot-01.wav";
+    sounds.shoot[1] = "assets/shoot-02.wav";
+    sounds.shoot[2] = "assets/shoot-03.wav";
+    sounds.shoot[3] = "assets/shoot-04.wav";
 
-    sounds.explosion[0] = pathOf("assets/explosion-01.wav", "../assets/explosion-01.wav");
-    sounds.explosion[1] = pathOf("assets/explosion-02.wav", "../assets/explosion-02.wav");
-    sounds.explosion[2] = pathOf("assets/explosion-03.wav", "../assets/explosion-03.wav");
-    sounds.explosion[3] = pathOf("assets/explosion-04.wav", "../assets/explosion-04.wav");
-    sounds.explosion[4] = pathOf("assets/explosion-05.wav", "../assets/explosion-05.wav");
-    sounds.explosion[5] = pathOf("assets/explosion-06.wav", "../assets/explosion-06.wav");
-    sounds.explosion[6] = pathOf("assets/explosion-07.wav", "../assets/explosion-07.wav");
-    sounds.explosion[7] = pathOf("assets/explosion-08.wav", "../assets/explosion-08.wav");
+    sounds.explosion[0] = "assets/explosion-01.wav";
+    sounds.explosion[1] = "assets/explosion-02.wav";
+    sounds.explosion[2] = "assets/explosion-03.wav";
+    sounds.explosion[3] = "assets/explosion-04.wav";
+    sounds.explosion[4] = "assets/explosion-05.wav";
+    sounds.explosion[5] = "assets/explosion-06.wav";
+    sounds.explosion[6] = "assets/explosion-07.wav";
+    sounds.explosion[7] = "assets/explosion-08.wav";
 
-    sounds.spawn[0] = pathOf("assets/spawn-01.wav", "../assets/spawn-01.wav");
-    sounds.spawn[1] = pathOf("assets/spawn-02.wav", "../assets/spawn-02.wav");
-    sounds.spawn[2] = pathOf("assets/spawn-03.wav", "../assets/spawn-03.wav");
-    sounds.spawn[3] = pathOf("assets/spawn-04.wav", "../assets/spawn-04.wav");
-    sounds.spawn[4] = pathOf("assets/spawn-05.wav", "../assets/spawn-05.wav");
-    sounds.spawn[5] = pathOf("assets/spawn-06.wav", "../assets/spawn-06.wav");
-    sounds.spawn[6] = pathOf("assets/spawn-07.wav", "../assets/spawn-07.wav");
-    sounds.spawn[7] = pathOf("assets/spawn-08.wav", "../assets/spawn-08.wav");
+    sounds.spawn[0] = "assets/spawn-01.wav";
+    sounds.spawn[1] = "assets/spawn-02.wav";
+    sounds.spawn[2] = "assets/spawn-03.wav";
+    sounds.spawn[3] = "assets/spawn-04.wav";
+    sounds.spawn[4] = "assets/spawn-05.wav";
+    sounds.spawn[5] = "assets/spawn-06.wav";
+    sounds.spawn[6] = "assets/spawn-07.wav";
+    sounds.spawn[7] = "assets/spawn-08.wav";
 
     // Use explosion variants for death and game over
     sounds.death = sounds.explosion[0];
