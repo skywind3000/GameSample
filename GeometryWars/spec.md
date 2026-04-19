@@ -6,7 +6,7 @@
 
 ```
 GeometryWars/
-├── geometry.cpp      # 游戏源码（单文件，~1300 行）
+├── geometry.cpp      # 游戏源码（单文件，~1400 行）
 ├── design.md         # 游戏设计文档（玩法、敌人、计分、操控）
 ├── spec.md           # 技术文档（本文档）
 ├── assets.md         # 资源列表（音效素材索引）
@@ -334,11 +334,15 @@ SCENE_COMBAT (2) ─── 玩家最终死亡 ──→ SCENE_DEATH (3)
 
 ### 5.3 场景切换时的初始化
 
-- **TITLE → COMBAT**：重置所有游戏数据（分数、连击、位置、敌人、子弹、粒子、网格、星空、生命、能量、弹出通知、成就标志、死亡原因）
+所有重置逻辑统一通过 `resetGame()` 函数完成，消除重复代码。
+
+- **TITLE → COMBAT**：调用 `resetGame()` + `game.SetScene(SCENE_COMBAT)`
 - **COMBAT → DEATH**：玩家最终死亡时触发（`playerAlive = false`，`lives <= 0`）
 - **DEATH → GAME_OVER**：自动（1.5 秒后），插入排行榜、保存最佳纪录、播放 game_over.wav
 - **GAME_OVER → LEADERBOARD**：按 Space 键
-- **LEADERBOARD → TITLE**：按 Space 键，重置所有游戏数据 + 清除震动状态
+- **LEADERBOARD → TITLE**：按 Space 键，调用 `resetGame()`（含清除震动状态）
+
+**`resetGame()` 函数**：重置分数、连击、位置、敌人池、子弹池、粒子池、浮动文字池、道具池、网格、星空、生命、能量、弹出通知、成就标志、死亡原因、摄像机、震动。
 
 ### 5.4 场景计时器
 
@@ -627,25 +631,56 @@ camY += (ty - camY) * 0.1f;
 ```cpp
 while (!game.IsClosed()) {
     double dt = game.GetDeltaTime();
-    if (dt > 0.05) dt = 0.05;  // 限制最大 dt 防止跳帧
+    if (dt > 0.05) dt = 0.05;
     float fdt = (float)dt;
 
-    // 输入处理
     if (game.IsKeyPressed(KEY_ESCAPE)) break;
-    if (game.IsKeyPressed(KEY_F9)) invincible = !invincible;  // 调试：无敌
+    if (game.IsKeyPressed(KEY_F9)) invincible = !invincible;
 
     // 场景状态机
     switch (game.GetScene()) {
-        case SCENE_TITLE:       // 标题画面
-        case SCENE_COMBAT:      // 战斗
+        case SCENE_TITLE:       // 标题画面（含 resetGame() 调用）
+        case SCENE_COMBAT:      // 战斗（调用 gameUpdate）
         case SCENE_DEATH:       // 死亡动画
         case SCENE_GAME_OVER:   // 结算
+        case SCENE_LEADERBOARD: // 排行榜（含 resetGame() 调用）
     }
 
-    // 摄像机更新（TITLE 场景除外）
     if (game.GetScene() != SCENE_TITLE) cameraUpdate();
+    game.Update();
+}
+```
 
-    game.Update();  // 提交帧
+### gameUpdate 子函数拆分
+
+`gameUpdate()` 从原先的 280 行单体函数拆分为 6 个子函数：
+
+| 子函数 | 职责 |
+|--------|------|
+| `updatePlayer(g, dt)` | 玩家移动 + 瞄准 |
+| `updateShooting(g, dt)` | 射击逻辑（含能量散射） |
+| `updateBullets(dt)` | 子弹移动 + 边界消失 |
+| `enemiesUpdate(dt)` | 敌人 AI 移动 |
+| `updateCollisions(g)` | 子弹vs敌人 + 玩家vs敌人 + 玩家vs道具碰撞 |
+| `updateTimers(dt)` | combo/energy/respawn/shake 计时器 |
+| `updateSpawner(g, dt)` | 敌人生成 + 道具生成 |
+
+总调度：
+```cpp
+static void gameUpdate(GameLib &g, float dt) {
+    updatePlayer(g, dt);
+    updateShooting(g, dt);
+    updateBullets(dt);
+    enemiesUpdate(dt);
+    updateCollisions(g);
+    particlesUpdate(dt);
+    floatTextsUpdate(dt);
+    popupUpdate(dt);
+    powerupsUpdate(dt);
+    gridUpdate(dt);
+    starsUpdate(dt);
+    updateTimers(dt);
+    updateSpawner(g, dt);
 }
 ```
 
@@ -734,3 +769,4 @@ while (!game.IsClosed()) {
 | 2026-04-19 | 添加死亡原因提示（GAME_OVER 显示 "KILLED BY: [敌人名]" + 图标） |
 | 2026-04-19 | 添加多命系统（3 呞，重生无敌 2 秒，清除附近敌人） |
 | 2026-04-19 | 添加高分排行榜（Top 10，SCENE_LEADERBOARD，GAME_OVER→Space→排行榜→Space→标题） |
+| 2026-04-19 | 代码整理：全局变量分组注释、gameUpdate拆分为6个子函数、提取resetGame公共重置、triggerNuke归入PowerUps区、Draw函数集中到Rendering区、前向声明 |
