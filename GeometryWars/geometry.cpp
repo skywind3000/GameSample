@@ -87,6 +87,13 @@ static float respawnTimer = 0.0f;
 static bool  respawnInvincible = false;
 static int killedByType = -1;
 
+// -- Player trail --
+#define TRAIL_LEN 12
+static float trailX[TRAIL_LEN], trailY[TRAIL_LEN], trailA[TRAIL_LEN];
+static int trailCount = 0;
+static float trailTimer = 0.0f;
+static float thrustParticleTimer = 0.0f;
+
 // -- Combat --
 static int score = 0, combo = 0, kills = 0;
 static int highestCombo = 1, totalKills = 0;
@@ -196,6 +203,7 @@ static void resetGame() {
     gameTime = 0.0f; spawnTimer = 0.0f; powerupSpawnTimer = 0.0f;
     px = MAP_W / 2.0f; py = MAP_H / 2.0f;
     camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
+    trailCount = 0; trailTimer = 0;
     playerAlive = true;
     invincible = false;
     lives = MAX_LIVES;
@@ -482,8 +490,8 @@ static void powerupsDraw(GameLib &g) {
             glow = COLOR_ARGB(80, 0, 200, 255);
             label = "NUKE";
         } else {
-            core = COLOR_ARGB(255, 255, 200, 50);
-            glow = COLOR_ARGB(80, 255, 150, 0);
+            core = COLOR_ARGB(255, 255, 180, 60);
+            glow = COLOR_ARGB(80, 255, 120, 30);
             label = "ENERGY";
         }
         // Beacon rings: 2 outward-expanding pulse circles
@@ -831,10 +839,47 @@ static void drawPlayer(GameLib &g) {
     float a = pAngle;
     uint32_t glow = COLOR_ARGB(60, 0, 255, 255);
     uint32_t core = COLOR_ARGB(240, 0, 255, 255);
+    uint32_t outline = COLOR_ARGB(160, 100, 255, 255);
+
+    // Draw trail (semi-transparent copies fading out)
+    for (int i = trailCount - 1; i >= 1; i--) {
+        float alphaFactor = 1.0f - (float)i / (float)TRAIL_LEN;
+        int trailSx = (int)(trailX[i] - camX + shakeX);
+        int trailSy = (int)(trailY[i] - camY + shakeY);
+        float ta = trailA[i];
+        int trailAlpha = (int)(alphaFactor * 100);
+        float scale = 0.7f + alphaFactor * 0.3f;
+        uint32_t trailColor = COLOR_ARGB(trailAlpha, 0, 200, 255);
+        float tVerts[6];
+        tVerts[0] = trailSx + (float)cos(ta) * 18 * scale;
+        tVerts[1] = trailSy + (float)sin(ta) * 18 * scale;
+        float tba = ta + (float)M_PI;
+        tVerts[2] = trailSx + ((float)cos(tba) * 10 + (float)cos(tba + 1.3f) * 10) * scale;
+        tVerts[3] = trailSy + ((float)sin(tba) * 10 + (float)sin(tba + 1.3f) * 10) * scale;
+        tVerts[4] = trailSx + ((float)cos(tba) * 10 + (float)cos(tba - 1.3f) * 10) * scale;
+        tVerts[5] = trailSy + ((float)sin(tba) * 10 + (float)sin(tba - 1.3f) * 10) * scale;
+        g.FillTriangle((int)tVerts[0], (int)tVerts[1], (int)tVerts[2], (int)tVerts[3], (int)tVerts[4], (int)tVerts[5], trailColor);
+    }
+
+    // Glow circle
     g.FillCircle(sx, sy, 20, glow);
     if (energyActive) {
-        g.FillCircle(sx, sy, 25, COLOR_ARGB(80, 255, 200, 50));
+        g.FillCircle(sx, sy, 25, COLOR_ARGB(80, 255, 180, 60));
     }
+
+    // Outer outline (slightly larger triangle)
+    float oScale = 1.3f;
+    float oVerts[6];
+    oVerts[0] = sx + (float)cos(a) * 18 * oScale;
+    oVerts[1] = sy + (float)sin(a) * 18 * oScale;
+    float oba = a + (float)M_PI;
+    oVerts[2] = sx + (float)cos(oba) * 10 * oScale + (float)cos(oba + 1.3f) * 10 * oScale;
+    oVerts[3] = sy + (float)sin(oba) * 10 * oScale + (float)sin(oba + 1.3f) * 10 * oScale;
+    oVerts[4] = sx + (float)cos(oba) * 10 * oScale + (float)cos(oba - 1.3f) * 10 * oScale;
+    oVerts[5] = sy + (float)sin(oba) * 10 * oScale + (float)sin(oba - 1.3f) * 10 * oScale;
+    g.DrawTriangle((int)oVerts[0], (int)oVerts[1], (int)oVerts[2], (int)oVerts[3], (int)oVerts[4], (int)oVerts[5], outline);
+
+    // Core triangle
     float verts[6];
     verts[0] = sx + (float)cos(a) * 18;
     verts[1] = sy + (float)sin(a) * 18;
@@ -844,8 +889,10 @@ static void drawPlayer(GameLib &g) {
     verts[4] = sx + (float)cos(ba) * 10 + (float)cos(ba - 1.3f) * 10;
     verts[5] = sy + (float)sin(ba) * 10 + (float)sin(ba - 1.3f) * 10;
     g.FillTriangle((int)verts[0], (int)verts[1], (int)verts[2], (int)verts[3], (int)verts[4], (int)verts[5], core);
+
+    // Engine glow
     float ex = sx - (float)cos(a) * 12, ey = sy - (float)sin(a) * 12;
-    g.FillCircle((int)ex, (int)ey, 4, COLOR_ARGB(150, 255, 200, 50));
+    g.FillCircle((int)ex, (int)ey, 4, COLOR_ARGB(150, 255, 180, 60));
 }
 
 static void drawBullets(GameLib &g) {
@@ -938,8 +985,8 @@ static void drawHUD(GameLib &g) {
         float ratio = energyTimer / ENERGY_DURATION;
         int barW = 80, barH = 6;
         int barX = WIN_W / 2 - barW / 2, barY = 50;
-        g.FillRect(barX, barY, (int)(barW * ratio), barH, COLOR_ARGB(200, 255, 200, 50));
-        g.DrawRect(barX, barY, barW, barH, COLOR_ARGB(150, 255, 150, 0));
+        g.FillRect(barX, barY, (int)(barW * ratio), barH, COLOR_ARGB(200, 255, 180, 60));
+        g.DrawRect(barX, barY, barW, barH, COLOR_ARGB(150, 255, 120, 30));
     }
 }
 
@@ -954,13 +1001,45 @@ static void updatePlayer(GameLib &g, float dt) {
     if (g.IsKeyDown(KEY_A) || g.IsKeyDown(KEY_LEFT)) dx -= 1;
     if (g.IsKeyDown(KEY_D) || g.IsKeyDown(KEY_RIGHT)) dx += 1;
     float len = (float)sqrt(dx * dx + dy * dy);
-    if (len > 0) { dx /= len; dy /= len; px += dx * PLAYER_SPEED * dt; py += dy * PLAYER_SPEED * dt; }
+    bool isMoving = (len > 0);
+    if (isMoving) { dx /= len; dy /= len; px += dx * PLAYER_SPEED * dt; py += dy * PLAYER_SPEED * dt; }
     clamp(px, 20, MAP_W - 20);
     clamp(py, 20, MAP_H - 20);
 
     float mx = (float)(g.GetMouseX()) + camX, my = (float)(g.GetMouseY()) + camY;
     float ddx = mx - px, ddy = my - py;
     if (dist(px, py, mx, my) > 5) pAngle = (float)atan2(ddy, ddx);
+
+    // Trail update: record position every ~0.03s
+    trailTimer += dt;
+    if (trailTimer >= 0.03f) {
+        trailTimer = 0;
+        if (trailCount < TRAIL_LEN) trailCount++;
+        for (int i = trailCount - 1; i > 0; i--) {
+            trailX[i] = trailX[i - 1]; trailY[i] = trailY[i - 1]; trailA[i] = trailA[i - 1];
+        }
+        trailX[0] = px; trailY[0] = py; trailA[0] = pAngle;
+    }
+
+    // Thrust particles: emit ~1 every 2 frames from rear when moving
+    thrustParticleTimer += dt;
+    if (isMoving && !respawnInvincible && thrustParticleTimer >= 0.06f) {
+        thrustParticleTimer = 0;
+        float rearX = px - (float)cos(pAngle) * 14;
+        float rearY = py - (float)sin(pAngle) * 14;
+        float spread = (float)((rand() % 60 - 30) * M_PI / 180.0f);
+        float spd = (float)(350 + rand() % 250);
+        float thrustAngle = pAngle + (float)M_PI + spread;
+        int r = 150 + rand() % 105;
+        int gb = (rand() % 2 == 0) ? 255 : 220;
+        int b2 = 200 + rand() % 55;
+        uint32_t thrustColor = energyActive
+            ? COLOR_ARGB(255, 255, 240, 200 + rand() % 55)
+            : COLOR_ARGB(255, r, gb, b2);
+        spawnParticle(rearX, rearY,
+                      (float)cos(thrustAngle) * spd, (float)sin(thrustAngle) * spd,
+                      thrustColor, 0.35f + (float)rand() / RAND_MAX * 0.2f, 2.0f + (float)(rand() % 2));
+    }
 }
 
 static void updateShooting(GameLib &g, float dt) {
@@ -1136,7 +1215,7 @@ static void updateCollisions(GameLib &g) {
                 } else if (powerups[i].type == 1) {
                     energyActive = true;
                     energyTimer = ENERGY_DURATION;
-                    showPopup("SPREAD SHOT!", COLOR_ARGB(255, 255, 200, 50), 3);
+                    showPopup("SPREAD SHOT!", COLOR_ARGB(255, 255, 180, 60), 3);
                     shake(3, 8);
                 }
                 powerups[i].active = false;
