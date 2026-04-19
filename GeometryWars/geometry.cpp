@@ -58,11 +58,11 @@
 // Structs
 // ============================================================
 struct GridPt  { float x, y, vx, vy; };
-struct Bullet  { float x, y, vx, vy; bool active; };
+struct Bullet  { float x, y, vx, vy; bool active; bool homing; };
 struct Enemy   { float x, y, vx, vy; int type; int hp; int maxHp; float r; float speed; bool active; float angle; float timer; };
 struct Particle{ float x, y, vx, vy; uint32_t color; float life; float maxLife; float sz; };
 struct FloatText { float x, y, vy; char text[16]; uint32_t color; float life; float maxLife; };
-struct PowerUp { float x, y, r; float life; float pulse; bool active; int type; }; // type 0 = nuke, 1 = energy
+struct PowerUp { float x, y, r; float life; float pulse; bool active; int type; int ability; }; // type 0=Nuke, 1=ability; ability 0=Spread,1=Homing,2=Shield,3=Slow
 struct Star { float x, y; uint32_t color; float drift; float sz; };
 struct Popup { char text[32]; uint32_t color; float life; float maxLife; int scale; };
 struct LBEntry { int score; float time; int kills; int combo; };
@@ -153,6 +153,11 @@ static int jackCount = 0;
 static int jackTotal = 0;
 static float bhSpawnTimer = 0.0f;
 static bool  energyActive = false;
+static int   abilityType = 0;      // 0=Spread, 1=Homing, 2=Shield, 3=Slow
+static bool  homingActive = false;
+static bool  shieldActive = false;
+static bool  slowActive = false;
+static float shieldAngle = 0.0f;   // rotating shield ring angle
 
 // -- Nuke FX --
 static float nukeFlashAlpha = 0.0f;   // white flash overlay (1.0 → 0.0)
@@ -238,7 +243,7 @@ static void shake(int amt, int frames);
 static void showPopup(const char *text, uint32_t color, int scale);
 static void spawnExplosion(float x, float y, uint32_t color, int count);
 static void spawnFloatText(float x, float y, const char *text, uint32_t color);
-static void spawnPowerUp(float x, float y, int type);
+static void spawnPowerUp(float x, float y, int type, int ability);
 static void spawnEnemy(int type, float x, float y);
 
 // ============================================================
@@ -257,7 +262,12 @@ static void resetGame() {
     respawnInvincible = false;
     respawnTimer = 0.0f;
     energyActive = false;
+    abilityType = 0;
     energyTimer = 0.0f;
+    homingActive = false;
+    shieldActive = false;
+    slowActive = false;
+    shieldAngle = 0.0f;
     nukeFxActive = false;
     nukeFlashAlpha = 0.0f;
     nukeWaveRadius = 0.0f;
@@ -517,11 +527,11 @@ static void floatTextsDraw(GameLib &g) {
 // ============================================================
 // PowerUps (includes triggerNuke)
 // ============================================================
-static void spawnPowerUp(float x, float y, int type) {
+static void spawnPowerUp(float x, float y, int type, int ability = 0) {
     for (int i = 0; i < MAX_POWERUPS; i++) {
         if (!powerups[i].active) {
             PowerUp &p = powerups[i];
-            p.x = x; p.y = y; p.r = 15; p.life = 8.0f; p.pulse = 0; p.active = true; p.type = type;
+            p.x = x; p.y = y; p.r = 15; p.life = 8.0f; p.pulse = 0; p.active = true; p.type = type; p.ability = ability;
             return;
         }
     }
@@ -553,9 +563,14 @@ static void powerupsDraw(GameLib &g) {
             glow = COLOR_ARGB(80, 0, 200, 255);
             label = "NUKE";
         } else {
-            core = COLOR_ARGB(255, 255, 180, 60);
-            glow = COLOR_ARGB(80, 255, 120, 30);
-            label = "ENERGY";
+            // Ability colors: Spread=orange-gold, Homing=light blue, Shield=gold, Slow=blue
+            switch (p.ability) {
+                case 0: core = COLOR_ARGB(255, 255, 180, 60); glow = COLOR_ARGB(80, 255, 120, 30); label = "SPREAD"; break;
+                case 1: core = COLOR_ARGB(255, 130, 220, 255); glow = COLOR_ARGB(80, 80, 180, 255); label = "HOMING"; break;
+                case 2: core = COLOR_ARGB(255, 255, 215, 0); glow = COLOR_ARGB(80, 200, 160, 0); label = "SHIELD"; break;
+                case 3: core = COLOR_ARGB(255, 80, 180, 255); glow = COLOR_ARGB(80, 40, 100, 220); label = "SLOW"; break;
+                default: core = COLOR_ARGB(255, 255, 180, 60); glow = COLOR_ARGB(80, 255, 120, 30); label = "ENERGY"; break;
+            }
         }
         // Beacon rings: 2 outward-expanding pulse circles
         float beaconPhase1 = (float)fmod(p.pulse * 0.8f, 2.0f);
@@ -836,6 +851,13 @@ static void enemiesUpdate(float dt) {
         }
         e.x += e.vx * dt;
         e.y += e.vy * dt;
+
+        // Slow Field: enemies within 180px of player move at 30% speed
+        if (slowActive && dist(e.x, e.y, px, py) < 180) {
+            // Undo 70% of the movement just applied
+            e.x -= e.vx * dt * 0.7f;
+            e.y -= e.vy * dt * 0.7f;
+        }
 
         if (e.type != 2 && e.type != 4) {
             clamp(e.x, e.r, MAP_W - e.r);
@@ -1134,15 +1156,37 @@ static void drawPlayer(GameLib &g) {
     // Engine glow
     float ex = sx - (float)cos(a) * 12, ey = sy - (float)sin(a) * 12;
     g.FillCircle((int)ex, (int)ey, 4, COLOR_ARGB(150, 255, 180, 60));
+
+    // Shield ring: 3 rotating gold dots at radius 50
+    if (shieldActive) {
+        g.DrawCircle(sx, sy, 50, COLOR_ARGB(100, 255, 215, 0));
+        for (int d = 0; d < 3; d++) {
+            float dotAngle = shieldAngle + d * (float)(2.0 * M_PI / 3);
+            int dx = sx + (int)(cos(dotAngle) * 50);
+            int dy = sy + (int)(sin(dotAngle) * 50);
+            g.FillCircle(dx, dy, 8, COLOR_ARGB(255, 255, 215, 0));
+            g.FillCircle(dx, dy, 12, COLOR_ARGB(80, 255, 215, 0));
+        }
+    }
+
+    // Slow Field: pulsing blue range circle
+    if (slowActive) {
+        float slowPulse = (float)sin(g.GetTime() * 3) * 0.1f + 1.0f;
+        int slowR = (int)(180 * slowPulse);
+        g.DrawCircle(sx, sy, slowR, COLOR_ARGB(60, 80, 180, 255));
+        g.DrawCircle(sx, sy, slowR - 5, COLOR_ARGB(30, 120, 220, 255));
+    }
 }
 
 static void drawBullets(GameLib &g) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) continue;
         int sx = (int)(bullets[i].x - camX + shakeX), sy = (int)(bullets[i].y - camY + shakeY);
-        g.FillCircle(sx, sy, 3, COLOR_ARGB(255, 200, 255, 200));
-        g.FillCircle(sx, sy, 6, COLOR_ARGB(100, 100, 255, 100));
-        g.FillCircle(sx - (int)(bullets[i].vx * 0.008f), sy - (int)(bullets[i].vy * 0.008f), 2, COLOR_ARGB(80, 100, 200, 100));
+        uint32_t coreColor = bullets[i].homing ? COLOR_ARGB(255, 130, 220, 255) : COLOR_ARGB(255, 200, 255, 200);
+        uint32_t glowColor = bullets[i].homing ? COLOR_ARGB(100, 80, 180, 255) : COLOR_ARGB(100, 100, 255, 100);
+        g.FillCircle(sx, sy, 3, coreColor);
+        g.FillCircle(sx, sy, 6, glowColor);
+        g.FillCircle(sx - (int)(bullets[i].vx * 0.008f), sy - (int)(bullets[i].vy * 0.008f), 2, glowColor);
     }
 }
 
@@ -1226,8 +1270,21 @@ static void drawHUD(GameLib &g) {
         float ratio = energyTimer / ENERGY_DURATION;
         int barW = 80, barH = 6;
         int barX = WIN_W / 2 - barW / 2, barY = 50;
-        g.FillRect(barX, barY, (int)(barW * ratio), barH, COLOR_ARGB(200, 255, 180, 60));
-        g.DrawRect(barX, barY, barW, barH, COLOR_ARGB(150, 255, 120, 30));
+        // Ability-specific colors and label
+        uint32_t barColor, barOutline;
+        const char *abilityName;
+        switch (abilityType) {
+            case 0: barColor = COLOR_ARGB(200, 255, 180, 60); barOutline = COLOR_ARGB(150, 255, 120, 30); abilityName = "SPREAD"; break;
+            case 1: barColor = COLOR_ARGB(200, 130, 220, 255); barOutline = COLOR_ARGB(150, 80, 180, 255); abilityName = "HOMING"; break;
+            case 2: barColor = COLOR_ARGB(200, 255, 215, 0); barOutline = COLOR_ARGB(150, 200, 160, 0); abilityName = "SHIELD"; break;
+            case 3: barColor = COLOR_ARGB(200, 80, 180, 255); barOutline = COLOR_ARGB(150, 40, 100, 220); abilityName = "SLOW"; break;
+            default: barColor = COLOR_ARGB(200, 255, 180, 60); barOutline = COLOR_ARGB(150, 255, 120, 30); abilityName = "ENERGY"; break;
+        }
+        g.FillRect(barX, barY, (int)(barW * ratio), barH, barColor);
+        g.DrawRect(barX, barY, barW, barH, barOutline);
+        // Ability name text above the bar
+        int nameW = (int)strlen(abilityName) * 8;
+        g.DrawText(WIN_W / 2 - nameW / 2, barY - 12, abilityName, barColor);
     }
 }
 
@@ -1303,11 +1360,11 @@ static void updateShooting(GameLib &g, float dt) {
     float rate = energyActive ? ENERGY_SHOOT_RATE : SHOOT_RATE;
     if (g.IsMouseDown(MOUSE_LEFT) && shootTimer >= rate) {
         shootTimer = 0;
-        int bulletCount = energyActive ? 5 : 1;
+        int bulletCount = (energyActive && abilityType == 0) ? 5 : 1;
         float spreadAngles[] = { -15.0f, -7.0f, 0.0f, 7.0f, 15.0f };
         for (int b = 0; b < bulletCount; b++) {
             float angle = pAngle;
-            if (energyActive) angle += spreadAngles[b] * (float)M_PI / 180.0f;
+            if (energyActive && abilityType == 0) angle += spreadAngles[b] * (float)M_PI / 180.0f;
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (!bullets[i].active) {
                     bullets[i].active = true;
@@ -1315,6 +1372,7 @@ static void updateShooting(GameLib &g, float dt) {
                     bullets[i].y = py + (float)sin(angle) * 15;
                     bullets[i].vx = (float)cos(angle) * BULLET_SPEED;
                     bullets[i].vy = (float)sin(angle) * BULLET_SPEED;
+                    bullets[i].homing = homingActive;
                     break;
                 }
             }
@@ -1326,6 +1384,29 @@ static void updateShooting(GameLib &g, float dt) {
 static void updateBullets(float dt) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) continue;
+        // Homing: steer toward nearest enemy, 3 degrees/frame
+        if (bullets[i].homing) {
+            float bestD = 999999;
+            float nearestX = 0, nearestY = 0;
+            for (int j = 0; j < MAX_ENEMIES; j++) {
+                if (!enemies[j].active) continue;
+                float d = dist(bullets[i].x, bullets[i].y, enemies[j].x, enemies[j].y);
+                if (d < bestD) { bestD = d; nearestX = enemies[j].x; nearestY = enemies[j].y; }
+            }
+            if (bestD < 500) {
+                float bulletAngle = (float)atan2(bullets[i].vy, bullets[i].vx);
+                float targetAngle = (float)atan2(nearestY - bullets[i].y, nearestX - bullets[i].x);
+                float diff = targetAngle - bulletAngle;
+                // Normalize to [-PI, PI]
+                while (diff > (float)M_PI) diff -= (float)(2.0 * M_PI);
+                while (diff < -(float)M_PI) diff += (float)(2.0 * M_PI);
+                float steer = 3.0f * (float)M_PI / 180.0f; // 3 degrees per frame
+                if (diff > 0) bulletAngle += steer;
+                else if (diff < 0) bulletAngle -= steer;
+                bullets[i].vx = (float)cos(bulletAngle) * BULLET_SPEED;
+                bullets[i].vy = (float)sin(bulletAngle) * BULLET_SPEED;
+            }
+        }
         bullets[i].x += bullets[i].vx * dt;
         bullets[i].y += bullets[i].vy * dt;
         if (bullets[i].x < -20 || bullets[i].x > MAP_W + 20 || bullets[i].y < -20 || bullets[i].y > MAP_H + 20) {
@@ -1388,16 +1469,18 @@ static void updateCollisions(GameLib &g) {
                     }
                     int dropPct = (int)(baseDrop[enemies[j].type] * dropScale);
                     if (dropPct > 0) {
-                        bool nearEnergy = false;
+                        bool nearAbility = false;
                         for (int k = 0; k < MAX_POWERUPS; k++) {
                             if (powerups[k].active && powerups[k].type == 1 &&
                                 dist(enemies[j].x, enemies[j].y, powerups[k].x, powerups[k].y) < 100.0f) {
-                                nearEnergy = true; break;
+                                nearAbility = true; break;
                             }
                         }
-                        if (nearEnergy) dropPct /= 2;
+                        // Also don't drop if player already has an active ability
+                        if (energyActive) nearAbility = true;
+                        if (nearAbility) dropPct /= 2;
                         if (rand() % 100 < dropPct) {
-                            spawnPowerUp(enemies[j].x, enemies[j].y, 1);
+                            spawnPowerUp(enemies[j].x, enemies[j].y, 1, rand() % 4);
                         }
                     }
 
@@ -1457,9 +1540,45 @@ static void updateCollisions(GameLib &g) {
                     respawnTimer = RESPAWN_INVINCIBLE;
                     energyActive = false;
                     energyTimer = 0;
+                    homingActive = false; shieldActive = false; slowActive = false;
                     for (int j = 0; j < MAX_BULLETS; j++) bullets[j].active = false;
                 }
                 break;
+            }
+        }
+    }
+
+    // Shield collision: rotating ring dots kill enemies on contact
+    if (shieldActive && playerAlive) {
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enemies[i].active) continue;
+            // Check collision with 3 shield dots orbiting player at radius 50
+            for (int d = 0; d < 3; d++) {
+                float dotAngle = shieldAngle + d * (float)(2.0 * M_PI / 3);
+                float dotX = px + (float)cos(dotAngle) * 50;
+                float dotY = py + (float)sin(dotAngle) * 50;
+                if (dist(dotX, dotY, enemies[i].x, enemies[i].y) < enemies[i].r + 8) {
+                    int pts[5] = { 50, 100, 150, 300, 200 };
+                    combo++; comboTimer = COMBO_TIMEOUT;
+                    if (combo > highestCombo) highestCombo = combo;
+                    int earned = pts[enemies[i].type] * combo;
+                    score += earned;
+                    kills++; totalKills++;
+                    spawnExplosion(enemies[i].x, enemies[i].y, enemyColor(enemies[i].type), 12);
+                    gridImpulse(enemies[i].x, enemies[i].y, 60, 40);
+                    char buf[16];
+                    sprintf(buf, "+%d", earned);
+                    spawnFloatText(enemies[i].x, enemies[i].y - 10, buf, COLOR_ARGB(255, 255, 215, 0));
+                    enemies[i].active = false;
+                    if (enemies[i].type == 3) {
+                        for (int k = 0; k < 3; k++) {
+                            float a = (float)(k * 120) * (float)M_PI / 180.0f;
+                            spawnEnemy(0, dotX + (float)cos(a) * 20, dotY + (float)sin(a) * 20);
+                        }
+                    }
+                    g.PlayWAV(pickRandom(sounds.explosion, 8));
+                    break;
+                }
             }
         }
     }
@@ -1472,10 +1591,21 @@ static void updateCollisions(GameLib &g) {
                 if (powerups[i].type == 0) {
                     triggerNuke(g);
                 } else if (powerups[i].type == 1) {
+                    // Activate ability based on type
+                    abilityType = powerups[i].ability;
                     energyActive = true;
                     energyTimer = ENERGY_DURATION;
-                    showPopup("SPREAD SHOT!", COLOR_ARGB(255, 255, 180, 60), 3);
-                    shake(3, 8);
+                    homingActive = (abilityType == 1);
+                    shieldActive = (abilityType == 2);
+                    slowActive = (abilityType == 3);
+                    shieldAngle = 0;
+                    // Popup notification with ability-specific color
+                    switch (abilityType) {
+                        case 0: showPopup("SPREAD SHOT!", COLOR_ARGB(255, 255, 180, 60), 3); shake(3, 8); break;
+                        case 1: showPopup("HOMING SHOT!", COLOR_ARGB(255, 130, 220, 255), 3); shake(3, 8); break;
+                        case 2: showPopup("SHIELD!", COLOR_ARGB(255, 255, 215, 0), 3); shake(3, 8); break;
+                        case 3: showPopup("SLOW FIELD!", COLOR_ARGB(255, 80, 180, 255), 3); shake(3, 8); break;
+                    }
                 }
                 powerups[i].active = false;
             }
@@ -1540,6 +1670,7 @@ static void updateCollisions(GameLib &g) {
                     respawnTimer = RESPAWN_INVINCIBLE;
                     energyActive = false;
                     energyTimer = 0;
+                    homingActive = false; shieldActive = false; slowActive = false;
                     for (int j = 0; j < MAX_BULLETS; j++) bullets[j].active = false;
                 }
                 break;
@@ -1553,8 +1684,13 @@ static void updateTimers(float dt) {
 
     if (energyActive) {
         energyTimer -= dt;
-        if (energyTimer <= 0) { energyActive = false; energyTimer = 0; }
+        if (energyTimer <= 0) {
+            energyActive = false; energyTimer = 0;
+            homingActive = false; shieldActive = false; slowActive = false;
+        }
     }
+
+    if (shieldActive) shieldAngle += 4.0f * (float)M_PI * dt; // 2 rotations/sec
 
     if (respawnInvincible) {
         respawnTimer -= dt;
@@ -1673,7 +1809,7 @@ static void updateSpawner(GameLib &g, float dt) {
         float pux = (float)(rand() % MAP_W);
         float puy = (float)(rand() % MAP_H);
         if (dist(pux, puy, px, py) > 200) {
-            spawnPowerUp(pux, puy, 0);
+            spawnPowerUp(pux, puy, 0, 0);
         }
     }
 
