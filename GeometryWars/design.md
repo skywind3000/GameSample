@@ -32,20 +32,21 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 
 | 场景 ID | 名称 | 说明 |
 |---------|------|------|
-| `SCENE_TITLE` (1) | 标题画面 | 显示标题、操作说明，等待 Enter；L 键跳转排行榜 |
+| `SCENE_TITLE` (1) | 标题画面 | 显示标题、操作说明、START 按钮（鼠标可点击），Enter/Space 也生效；L 键跳转排行榜 |
 | `SCENE_COMBAT` (2) | 战斗 | 正常游戏，敌人生成、射击、计分 |
 | `SCENE_DEATH` (3) | 死亡动画 | 播放最终死亡爆炸，约 1.5 秒后自动转入 GAME_OVER |
-| `SCENE_GAME_OVER` (4) | 结算画面 | 显示统计和死亡原因，按 Space 跳转排行榜 |
-| `SCENE_LEADERBOARD` (5) | 排行榜 | 显示 Top 10 高分，按 Space 回标题 |
+| `SCENE_GAME_OVER` (4) | 结算画面 | 显示统计和死亡原因，CONTINUE 按钮（鼠标可点击），Space/Enter 也生效 |
+| `SCENE_LEADERBOARD` (5) | 排行榜 | 显示 Top 10 高分，CONTINUE 按钮（鼠标可点击），Space/Enter 也生效 |
 
 ### 1. 开头画面 (TITLE)
 
 - 背景：黑底 + 弹簧网格缓慢自动波动（无玩家无敌人）。
 - 标题：屏幕上部黄金分割线（600 * 0.382 ≈ 229）附近大号 **"GEOMETRY WARS"**（`DrawTextScale`，scale 3~4），霓虹青色，带缓慢脉冲明暗。
 - 副标题：标题下方小字 **"PRESS ENTER TO START"**，闪烁。
-- 操作说明：标题下方列出详细操控方式（WASD 移动、鼠标瞄准、左键射击、Enter 开始）。
+- **START 按钮**：GameLib `Button`，鼠标可点击，键盘 Enter/Space 也生效。
+- 操作说明：按钮下方列出详细操控方式（WASD 移动、鼠标瞄准、左键射击）。
 - 历史纪录：画面底部灰色单行显示 `BEST: xxx | TIME M:SS`（历史最高分和最长存活时间）。
-- 按 Enter → 进入 SCENE_COMBAT，立即开始战斗。
+- 按 Enter/Space 或点击 START 按钮 → 进入 SCENE_COMBAT，立即开始战斗。
 - 按 L → 进入 SCENE_LEADERBOARD，查看排行榜。
 
 ### 2. 战斗 (COMBAT)
@@ -72,11 +73,11 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
   - 大号 **"GAME OVER"**（红色）。
   - 总分、总击杀数、最高连击倍率、存活时间。
   - **死亡原因**："KILLED BY: [敌人名]"，用敌人对应霓虹色 + 小图标。
-  - **"PRESS SPACE FOR LEADERBOARD"** → 进入排行榜。
+  - **CONTINUE 按钮**：GameLib `Button`，鼠标可点击，键盘 Space/Enter 也生效 → 进入排行榜。
 - **排行榜画面**：
   - Top 10 高分排行（分数、击杀数、存活时间）。
   - 本次成绩金色高亮。
-  - 按 Space 回标题画面。
+  - **CONTINUE 按钮**：GameLib `Button`，鼠标可点击，键盘 Space/Enter 也生效 → 回标题画面。
 
 ## 操控
 
@@ -85,9 +86,9 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 | 移动 | WASD 四方向（可对角线组合） |
 | 瞄准 | 鼠标位置，玩家朝向始终指向鼠标 |
 | 射击 | 鼠标左键按住连发 |
-| 开始 | Enter（开头画面） |
-| 重来 | Space（排行榜画面 → 标题画面） |
-| 排行榜 | Space（结算画面 → 排行榜） / L（标题画面） |
+| 开始 | Enter/Space（标题画面）或点击 START 按钮 |
+| 排行榜 | Space/Enter（结算画面→排行榜）或点击 CONTINUE 按钮 / Space/Enter（排行榜→标题）或点击 CONTINUE 按钮 |
+| 查看排行榜 | L（标题画面） |
 | **F9** | 调试：无敌切换（开启后不会被敌人/弹幕伤害，再按关闭） |
 
 ### 调试快捷键说明
@@ -314,7 +315,7 @@ GAME_OVER 画面显示最后一次致死敌人信息。
 - 排行榜按分数降序排列。
 - 本次成绩如入选，该行用金色高亮显示。
 - 标题画面按 L 键可查看排行榜。
-- 结算画面只能按 Space 进排行榜，再按 Space 回标题。
+- 结算画面只能按 Space/Enter 或点击 CONTINUE 按钮进排行榜，再按 Space/Enter 或点击 CONTINUE 按钮回标题。
 
 ## 屏幕震动
 

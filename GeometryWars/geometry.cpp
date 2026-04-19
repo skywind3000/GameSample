@@ -1205,8 +1205,12 @@ int main() {
                     drawTextCentered(game, "PRESS ENTER TO START", 255, COLOR_LIGHT_GRAY, 1);
                 }
 
+                // START button (mouse clickable)
+                int btnW = 140, btnH = 30;
+                bool startBtn = game.Button(WIN_W / 2 - btnW / 2, 290, btnW, btnH, "START", COLOR_CYAN);
+
                 // Controls instructions
-                int ctrlY = 285;
+                int ctrlY = 340;
                 game.DrawText(WIN_W / 2 - 120, ctrlY, "WASD : Move", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 15, "Mouse : Aim", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 30, "Left Click : Shoot", COLOR_DARK_GRAY);
@@ -1218,7 +1222,7 @@ int main() {
                 int bestSec = (int)bestTime % 60;
                 game.DrawPrintfScale(WIN_W / 2 - 130, WIN_H - 50, COLOR_DARK_GRAY, 1, "BEST: %d  |  TIME %d:%02d", bestScore, bestMin, bestSec);
 
-                if (game.IsKeyPressed(KEY_ENTER)) {
+                if (game.IsKeyPressed(KEY_ENTER) || game.IsKeyPressed(KEY_SPACE) || startBtn) {
                     score = 0; combo = 1; kills = 0;
                     totalKills = 0; highestCombo = 1; comboTimer = 0;
                     gameTime = 0.0f; spawnTimer = 0.0f; powerupSpawnTimer = 0.0f;
@@ -1375,10 +1379,10 @@ int main() {
                 popupDraw(game);
 
                 if (goTimer > 2.0f) {
-                    if ((int)(game.GetTime() * 2) % 2 == 0) {
-                        drawTextCentered(game, "PRESS SPACE FOR LEADERBOARD", WIN_H / 2 + 115, COLOR_LIGHT_GRAY, 1);
-                    }
-                    if (game.IsKeyPressed(KEY_SPACE)) {
+                    // CONTINUE button (mouse clickable)
+                    int btnW2 = 160, btnH2 = 30;
+                    bool contBtn = game.Button(WIN_W / 2 - btnW2 / 2, WIN_H / 2 + 115, btnW2, btnH2, "CONTINUE", COLOR_RED);
+                    if (game.IsKeyPressed(KEY_SPACE) || game.IsKeyPressed(KEY_ENTER) || contBtn) {
                         game.SetScene(SCENE_LEADERBOARD);
                         goTimer = 0;
                     }
@@ -1404,24 +1408,23 @@ int main() {
                 lbDraw(game);
 
                 if (lbTimer > 1.0f) {
-                    if ((int)(game.GetTime() * 2) % 2 == 0) {
-                        drawTextCentered(game, "PRESS SPACE TO RETURN", WIN_H - 40, COLOR_LIGHT_GRAY, 1);
+                    // CONTINUE button (mouse clickable)
+                    int btnW3 = 160, btnH3 = 30;
+                    bool contBtn = game.Button(WIN_W / 2 - btnW3 / 2, WIN_H - 45, btnW3, btnH3, "CONTINUE", COLOR_CYAN);
+                    if (game.IsKeyPressed(KEY_SPACE) || game.IsKeyPressed(KEY_ENTER) || contBtn) {
+                        game.SetScene(SCENE_TITLE);
+                        lbTimer = 0;
+                        gridInit();
+                        for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
+                        for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
+                        for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
+                        for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
+                        for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
+                        playerAlive = true;
+                        px = MAP_W / 2.0f; py = MAP_H / 2.0f;
+                        camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
+                        shakeAmt = 0; shakeX = 0; shakeY = 0; shakeFrames = 0;
                     }
-                }
-
-                if (game.IsKeyPressed(KEY_SPACE)) {
-                    game.SetScene(SCENE_TITLE);
-                    lbTimer = 0;
-                    gridInit();
-                    for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
-                    for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
-                    for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
-                    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
-                    for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
-                    playerAlive = true;
-                    px = MAP_W / 2.0f; py = MAP_H / 2.0f;
-                    camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
-                    shakeAmt = 0; shakeX = 0; shakeY = 0; shakeFrames = 0;
                 }
                 break;
             }
