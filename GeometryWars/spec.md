@@ -77,6 +77,28 @@ D:\Dev\mingw32\bin\g++.exe
 | `SHOOT_RATE` | 0.12f | 射击间隔（秒），约每秒 8.3 发 |
 | `COMBO_TIMEOUT` | 2.0f | 连击超时（秒） |
 
+### 存档
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `SAVE_FILE` | `"geometry_wars.sav"` | 存档文件名 |
+
+**存档数据**：
+
+| 变量 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| `bestScore` | `int` | 历史最高分 | 0 |
+| `bestTime` | `float` | 历史最长存活时间（秒） | 0.0 |
+
+**API 使用**：
+
+| 操作 | API | 时机 |
+|------|-----|------|
+| 加载 | `GameLib::LoadInt(SAVE_FILE, "bestScore", 0)` | `main()` 初始化时 |
+| 加载 | `GameLib::LoadFloat(SAVE_FILE, "bestTime", 0.0f)` | `main()` 初始化时 |
+| 保存 | `GameLib::SaveInt(SAVE_FILE, "bestScore", bestScore)` | GAME_OVER 按 R 时（如破纪录） |
+| 保存 | `GameLib::SaveFloat(SAVE_FILE, "bestTime", bestTime)` | GAME_OVER 按 R 时（如破纪录） |
+
 ### 场景 ID
 
 | 常量 | 值 | 说明 |
@@ -217,7 +239,7 @@ SCENE_COMBAT (2) ───── 玩家被碰撞 ────→ SCENE_DEATH (3)
 
 #### SCENE_TITLE - 标题画面
 - **更新**：弹簧网格（自动波动）
-- **绘制**：网格、标题文字、"PRESS ENTER TO START"（闪烁）、操作说明
+- **绘制**：网格、标题文字（上部黄金分割线 Y≈229 处）、"PRESS ENTER TO START"（闪烁）、操作说明、历史纪录（底部灰色单行 `BEST: xxx | TIME M:SS`）
 - **输入**：Enter → 重置游戏数据，切换到 SCENE_COMBAT
 - **摄像机**：不更新
 
@@ -237,8 +259,9 @@ SCENE_COMBAT (2) ───── 玩家被碰撞 ────→ SCENE_DEATH (3)
 #### SCENE_GAME_OVER - 结算画面
 - **更新**：网格、粒子
 - **绘制**：黑色背景 → 网格 → 粒子 → GAME OVER 文字 → 统计数据 → "PRESS R TO RESTART"（闪烁）
-- **输入**：R 键 → 重置游戏数据，切换到 SCENE_TITLE
+- **输入**：R 键 → 检查并保存历史最高分/最长时间 → 重置游戏数据，切换到 SCENE_TITLE
 - **显示数据**：最终分数、存活时间、总击杀数、最高连击倍率
+- **存档逻辑**：按 R 时，如果 `score > bestScore` 或 `gameTime > bestTime`，调用 `GameLib::SaveInt/SaveFloat` 保存新纪录
 - **摄像机**：不更新（保持在死亡位置）
 
 ### 5.3 场景切换时的初始化
@@ -246,7 +269,7 @@ SCENE_COMBAT (2) ───── 玩家被碰撞 ────→ SCENE_DEATH (3)
 - **TITLE → COMBAT**：重置所有游戏数据（分数、连击、位置、敌人、子弹、粒子、网格）
 - **COMBAT → DEATH**：玩家死亡时触发（`playerAlive = false`）
 - **DEATH → GAME_OVER**：自动（1.5 秒后），播放 game_over.wav
-- **GAME_OVER → TITLE**：按 R 键，重置所有游戏数据 + 清除震动状态
+- **GAME_OVER → TITLE**：按 R 键，检查并保存历史最高分/最长时间 → 重置所有游戏数据 + 清除震动状态
 
 ### 5.4 场景计时器
 
@@ -342,7 +365,8 @@ g.y += g.vy * dt * 60.0f;
 
 #### 弹跳方块 (Type 2)
 - **行为**：匀速直线运动，不追踪玩家
-- **初始化**：随机方向 `vx = cos(a) * speed, vy = sin(a) * speed`
+- **初始化**：随机方向 `vx = cos(a) * speed, vy = sin(a) * speed`，独立随机初始旋转角度 `angle`
+- **旋转**：每帧 `angle -= 4π * dt`（逆时针 2 圈/秒）
 - **边界**：碰到地图边界反弹（`vx = -vx` 或 `vy = -vy`）
 
 #### 坦克大圆 (Type 3)
@@ -471,7 +495,8 @@ camY += (ty - camY) * 0.1f;
 
 **HUD 显示**：
 - 左上角：`SCORE: xxx`（白色）
-- 顶部中央：`xCombo`（黄色，2 倍放大，仅 combo > 1 时显示）
+- 顶部中央：`BEST: xxx`（金色，历史最高分）
+- 顶部中央偏右：`xCombo`（黄色，2 倍放大，仅 combo > 1 时显示）
 - 右上角：`TIME M:SS`（天蓝色）
 
 ### 6.9 玩家绘制
@@ -597,6 +622,8 @@ while (!game.IsClosed()) {
 | `FillRect` | 死亡白色闪光 |
 | `DrawText / DrawTextScale` | 文字 |
 | `DrawPrintf / DrawPrintfScale` | 格式化文字（分数、连击、时间） |
+| `SaveInt / LoadInt` | 历史最高分存档 |
+| `SaveFloat / LoadFloat` | 历史最长存活时间存档 |
 
 ## 10. 未来可扩展方向
 
@@ -604,11 +631,12 @@ while (!game.IsClosed()) {
 - [x] 敌人死亡浮动得分文字（向上飘动 fade out）
 - [x] 清屏道具（Nuke，全屏敌人爆炸）
 - [x] 子弹命中火花特效（白色反弹粒子）
+- [x] 历史最高分/最长时间存档系统
 - [ ] 多命系统（3 命）
 - [ ] 能量道具（击杀敌人掉落，拾取后强化武器）
 - [ ] Boss 敌人（超大血量，特殊攻击模式）
 - [ ] 背景星空（静态粒子，增加画面层次）
-- [ ] 高分排行榜（本地存档）
+- [ ] 高分排行榜（多条目排名）
 - [ ] 多武器类型（散射、激光、导弹）
 - [ ] 移动端适配（虚拟摇杆 + 自动射击）
 
@@ -624,3 +652,8 @@ while (!game.IsClosed()) {
 | 2026-04-19 | 添加子弹命中火花特效（白色反弹粒子） |
 | 2026-04-19 | 添加敌人死亡浮动得分文字（向上飘动 fade out） |
 | 2026-04-19 | 添加清屏道具 Nuke（全屏敌人爆炸） |
+| 2026-04-19 | 弹跳方块添加逆时针旋转（2 圈/秒，独立初始角度） |
+| 2026-04-19 | 标题文字移至上部黄金分割线（Y≈229） |
+| 2026-04-19 | 添加历史最高分/最长时间存档系统（GameLib Save/Load API） |
+| 2026-04-19 | HUD 顶部中央显示历史最高分（金色） |
+| 2026-04-19 | 标题画面底部灰色单行显示历史纪录 |

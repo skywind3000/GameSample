@@ -76,6 +76,11 @@ static float comboTimer = 0.0f;
 static int highestCombo = 1, totalKills = 0;
 static float gameTime = 0.0f;  // Survival time in seconds
 
+// All-time records (persisted via GameLib save system)
+static int bestScore = 0;
+static float bestTime = 0.0f;
+static const char *SAVE_FILE = "geometry_wars.sav";
+
 static bool playerAlive = true;
 static bool invincible = false;
 static float shakeAmt = 0.0f, shakeX = 0.0f, shakeY = 0.0f;
@@ -369,6 +374,7 @@ static void spawnEnemy(int type, float x, float y) {
                 float a = (float)rand() / RAND_MAX * (float)(2.0 * M_PI);
                 e.vx = (float)cos(a) * e.speed;
                 e.vy = (float)sin(a) * e.speed;
+                e.angle = (float)rand() / RAND_MAX * (float)(2.0 * M_PI); // independent random initial rotation
             }
             return;
         }
@@ -420,7 +426,9 @@ static void enemiesUpdate(float dt) {
                 e.angle = (float)atan2(e.vy, e.vx);
                 break;
             }
-            case 2: { // Bouncer - linear with wall bounce
+            case 2: { // Bouncer - linear with wall bounce, constant counter-clockwise rotation
+                // Rotate counter-clockwise at 2 revolutions per second (4π rad/s)
+                e.angle -= (float)(4.0 * M_PI) * dt;
                 break;
             }
             case 3: { // Tank - slow drift toward player
@@ -587,10 +595,14 @@ static void drawMapBorder(GameLib &g) {
 
 static void drawHUD(GameLib &g) {
     g.DrawPrintf(10, 10, COLOR_WHITE, "SCORE: %d", score);
+
+    // Best score at top center
+    g.DrawPrintfScale(WIN_W / 2 - 80, 8, COLOR_GOLD, 1, "BEST: %d", bestScore);
+
     if (combo > 1) {
-        g.DrawPrintfScale(WIN_W / 2 - 30, 10, COLOR_YELLOW, 2, "x%d", combo);
+        g.DrawPrintfScale(WIN_W / 2 - 30, 30, COLOR_YELLOW, 2, "x%d", combo);
     }
-    
+
     // Survival time
     int minutes = (int)gameTime / 60;
     int seconds = (int)gameTime % 60;
@@ -828,6 +840,10 @@ int main() {
     game.Open(WIN_W, WIN_H, "Geometry Wars", true);
     game.ShowMouse(true);
 
+    // Load all-time records from save file (defaults to 0 if no save)
+    bestScore = GameLib::LoadInt(SAVE_FILE, "bestScore", 0);
+    bestTime = GameLib::LoadFloat(SAVE_FILE, "bestTime", 0.0f);
+
     // Resolve sound paths - use actual files in assets/ directory
     sounds.shoot[0] = pathOf("assets/shoot-01.wav", "../assets/shoot-01.wav");
     sounds.shoot[1] = pathOf("assets/shoot-02.wav", "../assets/shoot-02.wav");
@@ -883,24 +899,29 @@ int main() {
                 gridUpdate(fdt);
                 gridDraw(game);
 
-                // Title text
+                // Title text - centered on upper golden ratio line (600 * 0.382 ≈ 229)
                 float pulse = (float)sin(game.GetTime() * 2) * 0.3f + 0.7f;
                 uint32_t tc = COLOR_ARGB((uint32_t)(pulse * 255), 0, 255, 255);
                 const char *title = "GEOMETRY WARS";
                 int tw = (int)strlen(title) * 8 * 3;
-                game.DrawTextScale(WIN_W / 2 - tw / 2, WIN_H / 2 - 40, title, tc, 3);
+                game.DrawTextScale(WIN_W / 2 - tw / 2, 210, title, tc, 3);
 
                 // Blink "PRESS ENTER"
                 if ((int)(game.GetTime() * 2) % 2 == 0) {
-                    drawTextCentered(game, "PRESS ENTER TO START", WIN_H / 2 + 20, COLOR_LIGHT_GRAY, 1);
+                    drawTextCentered(game, "PRESS ENTER TO START", 255, COLOR_LIGHT_GRAY, 1);
                 }
 
                 // Controls instructions
-                int ctrlY = WIN_H / 2 + 50;
+                int ctrlY = 285;
                 game.DrawText(WIN_W / 2 - 120, ctrlY, "WASD : Move", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 15, "Mouse : Aim", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 30, "Left Click : Shoot", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 45, "Enter : Start Game", COLOR_DARK_GRAY);
+
+                // Best records at bottom (single line)
+                int bestMin = (int)bestTime / 60;
+                int bestSec = (int)bestTime % 60;
+                game.DrawPrintfScale(WIN_W / 2 - 130, WIN_H - 50, COLOR_DARK_GRAY, 1, "BEST: %d  |  TIME %d:%02d", bestScore, bestMin, bestSec);
 
                 if (game.IsKeyPressed(KEY_ENTER)) {
                     score = 0; combo = 1; kills = 0;
@@ -999,6 +1020,16 @@ int main() {
                         drawTextCentered(game, "PRESS R TO RESTART", WIN_H / 2 + 110, COLOR_LIGHT_GRAY, 1);
                     }
                     if (game.IsKeyPressed(KEY_R)) {
+                        // Save new records if beaten
+                        if (score > bestScore) {
+                            bestScore = score;
+                            GameLib::SaveInt(SAVE_FILE, "bestScore", bestScore);
+                        }
+                        if (gameTime > bestTime) {
+                            bestTime = gameTime;
+                            GameLib::SaveFloat(SAVE_FILE, "bestTime", bestTime);
+                        }
+
                         game.SetScene(SCENE_TITLE);
                         goTimer = 0;
                         gridInit();
