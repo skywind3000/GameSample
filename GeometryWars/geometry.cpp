@@ -101,6 +101,12 @@ static float shakeAmt = 0.0f, shakeX = 0.0f, shakeY = 0.0f;
 static int shakeFrames = 0;
 static float energyTimer = 0.0f;
 static bool  energyActive = false;
+
+// -- Nuke FX --
+static float nukeFlashAlpha = 0.0f;   // white flash overlay (1.0 → 0.0)
+static float nukeWaveRadius = 0.0f;   // shockwave circle radius (0 → >screen)
+static float nukeWaveAlpha = 0.0f;    // shockwave circle alpha (1.0 → 0.0)
+static bool  nukeFxActive = false;
 static Popup popup;
 static bool combo5Shown = false, combo10Shown = false;
 static bool kills50Shown = false, kills100Shown = false, kills200Shown = false;
@@ -114,7 +120,7 @@ static int lbHighlight = -1;
 // -- Records --
 static int bestScore = 0;
 static float bestTime = 0.0f;
-static const char *SAVE_FILE = "geometry_wars.sav";
+static const char *SAVE_FILE = "geometry.sav";
 
 // -- Pools --
 static GridPt grid[GRID_ROWS][GRID_COLS];
@@ -195,6 +201,10 @@ static void resetGame() {
     respawnTimer = 0.0f;
     energyActive = false;
     energyTimer = 0.0f;
+    nukeFxActive = false;
+    nukeFlashAlpha = 0.0f;
+    nukeWaveRadius = 0.0f;
+    nukeWaveAlpha = 0.0f;
     killedByType = -1;
     combo5Shown = false; combo10Shown = false;
     kills50Shown = false; kills100Shown = false; kills200Shown = false;
@@ -492,6 +502,12 @@ static void triggerNuke(GameLib &g) {
     g.PlayWAV(pickRandom(sounds.explosion, 8));
     shake(8, 20);
     gridImpulse(px, py, 600, 400);
+
+    // Nuke visual FX: white flash + shockwave circle
+    nukeFlashAlpha = 1.0f;
+    nukeWaveRadius = 0.0f;
+    nukeWaveAlpha = 1.0f;
+    nukeFxActive = true;
 
     for (int i = 0; i < MAX_ENEMIES; i++) {
         if (!enemies[i].active) continue;
@@ -853,6 +869,8 @@ static void drawHUD(GameLib &g) {
 
     g.DrawPrintf(10, WIN_H - 20, COLOR_WHITE, "LIVES: %d", lives);
 
+    g.DrawPrintf(WIN_W - 60, WIN_H - 20, COLOR_WHITE, "%.0f FPS", g.GetFPS());
+
     if (energyActive) {
         float ratio = energyTimer / ENERGY_DURATION;
         int barW = 80, barH = 6;
@@ -1078,6 +1096,23 @@ static void updateTimers(float dt) {
     }
 
     shakeUpdate();
+
+    // Nuke FX timers
+    if (nukeFxActive) {
+        // Flash: alpha decays slowly (full white → transparent in ~0.5s)
+        nukeFlashAlpha -= dt * 2.0f;
+        if (nukeFlashAlpha < 0) nukeFlashAlpha = 0;
+
+        // Wave: radius expands rapidly, alpha fades as it grows
+        nukeWaveRadius += dt * 1200.0f;
+        nukeWaveAlpha -= dt * 2.5f;
+        if (nukeWaveAlpha < 0) nukeWaveAlpha = 0;
+
+        if (nukeFlashAlpha <= 0 && nukeWaveAlpha <= 0) {
+            nukeFxActive = false;
+            nukeWaveRadius = 0;
+        }
+    }
 }
 
 static void updateSpawner(GameLib &g, float dt) {
@@ -1145,7 +1180,8 @@ static void gameUpdate(GameLib &g, float dt) {
 // ============================================================
 int main() {
     GameLib game;
-    game.Open(WIN_W, WIN_H, "Geometry Wars", true);
+    game.Open(WIN_W, WIN_H, "Geometry Wars", true, true);
+    game.ShowFps(true);
     game.ShowMouse(true);
 
     // Load all-time records from save file (defaults to 0 if no save)
@@ -1198,6 +1234,11 @@ int main() {
             invincible = !invincible;
         }
 
+        // Debug hotkey: F5 = Trigger Nuke
+        if (game.IsKeyPressed(KEY_F5)) {
+            triggerNuke(game);
+        }
+
         // ---- State machine using SetScene ----
         switch (game.GetScene()) {
             case SCENE_TITLE: {
@@ -1235,6 +1276,9 @@ int main() {
                 int bestSec = (int)bestTime % 60;
                 game.DrawPrintfScale(WIN_W / 2 - 130, WIN_H - 50, COLOR_DARK_GRAY, 1, "BEST: %d  |  TIME %d:%02d", bestScore, bestMin, bestSec);
 
+                // Powered by GameLib
+                drawTextCentered(game, "Powered by GameLib", WIN_H - 25, COLOR_ARGB(100, 100, 100, 100), 1);
+
                 if (game.IsKeyPressed(KEY_ENTER) || game.IsKeyPressed(KEY_SPACE) || startBtn) {
                     resetGame();
                     game.SetScene(SCENE_COMBAT);
@@ -1262,6 +1306,24 @@ int main() {
                 floatTextsDraw(game);
                 popupDraw(game);
                 drawHUD(game);
+
+                // Nuke FX: shockwave circle + white flash overlay
+                if (nukeFxActive) {
+                    // Shockwave circle centered on player (world-space)
+                    if (nukeWaveAlpha > 0) {
+                        int waveSx = (int)(px - camX + shakeX);
+                        int waveSy = (int)(py - camY + shakeY);
+                        uint32_t wc = COLOR_ARGB((uint32_t)(nukeWaveAlpha * 200), 0, 255, 255);
+                        game.DrawCircle(waveSx, waveSy, (int)nukeWaveRadius, wc);
+                        wc = COLOR_ARGB((uint32_t)(nukeWaveAlpha * 100), 200, 255, 255);
+                        game.DrawCircle(waveSx, waveSy, (int)(nukeWaveRadius * 0.85f), wc);
+                    }
+                    // White flash overlay (screen-space)
+                    if (nukeFlashAlpha > 0) {
+                        uint32_t fc = COLOR_ARGB((uint32_t)(nukeFlashAlpha * 220), 255, 255, 255);
+                        game.FillRect(0, 0, WIN_W, WIN_H, fc);
+                    }
+                }
                 break;
             }
 

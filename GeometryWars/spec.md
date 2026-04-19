@@ -50,6 +50,8 @@ D:\Dev\mingw32\bin\g++.exe
 | `MAP_H` | 900 | 地图高度（逻辑坐标） |
 | `WIN_W` | 800 | 窗口宽度（framebuffer） |
 | `WIN_H` | 600 | 窗口高度（framebuffer） |
+| `resizable` | true | 窗口可缩放 |
+| `showFps` | true | 标题栏显示实时 FPS |
 
 ### 网格
 
@@ -93,7 +95,7 @@ D:\Dev\mingw32\bin\g++.exe
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `SAVE_FILE` | `"geometry_wars.sav"` | 存档文件名 |
+| `SAVE_FILE` | `"geometry.sav"` | 存档文件名 |
 
 **存档数据**：
 
@@ -226,10 +228,12 @@ struct PowerUp {
 - **效果** (`triggerNuke`)：
   1. 弹出 "NUKE ACTIVATED!" 通知
   2. 播放爆炸音效
-  3. 屏幕强震（8px，20帧）
-  4. 网格强力冲击（半径 600，强度 400）
-  5. 每个敌人独立爆炸 + 得分飘字
-  6. 玩家位置白色大闪光（50粒子）
+  3. 屏幕闪白（`FillRect` 全屏白色叠加，alpha 220 → 0，衰减速率 2.0/s，约 0.5s 复原）
+  4. 冲击波圆（以玩家为中心，双环 `DrawCircle`，半径以 1200px/s 扩大，alpha 以 2.5/s fade out）
+  5. 屏幕强震（8px，20帧）
+  6. 网格强力冲击（半径 600，强度 400）
+  7. 每个敌人独立爆炸 + 得分飘字
+  8. 玩家位置白色大闪光（50粒子）
 
 **能量道具 (Energy)**（type 1）：
 - **掉落**：击杀敌人时概率掉落——蜂群圆 7%、追踪三角 10%、弹跳方块 12%、坦克 17%。活跃敌人数超过 15 时概率递减（每多5个敌人约减10%，最低30%）；100px 内已有能量道具时概率减半
@@ -272,7 +276,7 @@ struct Popup { char text[32]; uint32_t color; float life; float maxLife; int sca
 struct LBEntry { int score; float time; int kills; int combo; };
 ```
 
-**存储**：`geometry_wars.sav` 中 lb_score0~9, lb_time0~9, lb_kills0~9, lb_combo0~9（40 个 key）
+**存储**：`geometry.sav` 中 lb_score0~9, lb_time0~9, lb_kills0~9, lb_combo0~9（40 个 key）
 **排序**：按分数降序
 
 ## 5. 场景状态机
@@ -300,7 +304,7 @@ SCENE_COMBAT (2) ─── 玩家最终死亡 ──→ SCENE_DEATH (3)
 
 #### SCENE_TITLE - 标题画面
 - **更新**：弹簧网格（自动波动）、星空漂移
-- **绘制**：星空 → 网格 → 标题文字 → 操作说明 → 历史纪录
+- **绘制**：星空 → 网格 → 标题文字 → 操作说明 → 历史纪录 → "Powered by GameLib"
 - **输入**：Enter → 重置游戏数据，切换到 SCENE_COMBAT；L → 切换到 SCENE_LEADERBOARD
 - **摄像机**：不更新
 
@@ -619,7 +623,8 @@ camY += (ty - camY) * 0.1f;
 9. 粒子（particlesDraw）
 10. 浮动文字（floatTextsDraw）
 11. 弹出通知（popupDraw）
-12. HUD（drawHUD，含生命和能量条）
+12. HUD（drawHUD，含生命、能量条、右下角 FPS）
+13. Nuke FX（冲击波圆 + 闪白叠加，仅在 nukeFxActive 时绘制）
 ```
 
 **特殊效果**：
@@ -688,6 +693,7 @@ static void gameUpdate(GameLib &g, float dt) {
 
 ### 9.1 调试功能
 - **F9**：切换无敌模式（开启后不会被敌人/弹幕伤害）
+- **F5**：无条件触发 Nuke（测试闪白+冲击波视觉效果）
 
 ### 9.2 限制
 - 最大子弹数 150，超过后无法射击（会等待空闲槽位）
@@ -701,12 +707,14 @@ static void gameUpdate(GameLib &g, float dt) {
 - 弹簧网格的 `dt * 60.0f` 缩放因子是为了在 60 FPS 下获得正确的物理效果
 - 粒子的摩擦力公式 `(1.0f - 4.0f * dt)` 确保在 60 FPS 下约 0.25 秒减速到一半
 - 屏幕震动使用随机偏移，每帧重新计算
+- **不限帧设计**：不调用 `WaitFrame`，游戏全速运行，用于测试 GameLib 渲染性能；`dt` 上限钳制为 0.05s 防止帧率过低时物理崩溃
 
 ### 9.4 GameLib.h API 使用清单
 
 | API | 使用场景 |
 |-----|---------|
-| `Open` | 创建窗口 |
+| `Open` | 创建窗口（可缩放） |
+| `ShowFps` | 标题栏显示实时 FPS |
 | `ShowMouse` | 显示鼠标光标 |
 | `GetDeltaTime` | 帧间隔 |
 | `GetTime` | 运行总时间（标题脉冲、闪烁文字） |
@@ -771,3 +779,7 @@ static void gameUpdate(GameLib &g, float dt) {
 | 2026-04-19 | 添加高分排行榜（Top 10，SCENE_LEADERBOARD，GAME_OVER→Space→排行榜→Space→标题） |
 | 2026-04-19 | 代码整理：全局变量分组注释、gameUpdate拆分为6个子函数、提取resetGame公共重置、triggerNuke归入PowerUps区、Draw函数集中到Rendering区、前向声明 |
 | 2026-04-19 | 道具概率调整：能量道具基础概率修正(7/10/12/17%)、敌人多时概率递减、100px内已有能量道具概率减半；Nuke生成间隔改为14~22秒 |
+| 2026-04-19 | 窗口改为可缩放（Open resizable=true）、标题栏显示 FPS（ShowFps）、标题画面底部添加 "Powered by GameLib" |
+| 2026-04-19 | Nuke 道具视觉增强：拾取瞬间屏幕闪白（FillRect alpha 220→0，0.5s 复原）+ 冲击波圆（双环 DrawCircle 从玩家中心扩展，1200px/s，alpha fade out） |
+| 2026-04-19 | 调试快捷键 F5 无条件触发 Nuke；HUD 右下角显示实时 FPS（GetFPS） |
+| 2026-04-19 | 存档文件名改为 geometry.sav；FPS 颜色调亮为白色；文档补充不限帧设计说明（不调用 WaitFrame，用于测试 GameLib 性能） |

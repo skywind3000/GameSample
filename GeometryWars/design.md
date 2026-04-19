@@ -6,9 +6,9 @@
 
 | 项目 | 值 |
 |------|-----|
-| 窗口尺寸 | 800 x 600 |
+| 窗口尺寸 | 800 x 600（可缩放） |
 | 地图尺寸 | 1200 x 900 |
-| 帧率 | 60 FPS |
+| 帧率 | 不限帧（不调用 WaitFrame，用于测试 GameLib 性能） |
 | 视觉风格 | 黑底 + 背景星空 + 霓虹色几何体 + 粒子爆炸 |
 | 渲染方式 | 纯图元绘制，零精灵素材依赖 |
 
@@ -46,6 +46,7 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 - **START 按钮**：GameLib `Button`，鼠标可点击，键盘 Enter/Space 也生效。
 - 操作说明：按钮下方列出详细操控方式（WASD 移动、鼠标瞄准、左键射击）。
 - 历史纪录：画面底部灰色单行显示 `BEST: xxx | TIME M:SS`（历史最高分和最长存活时间）。
+- **Powered by GameLib**：历史纪录下方半透明灰色居中文字。
 - 按 Enter/Space 或点击 START 按钮 → 进入 SCENE_COMBAT，立即开始战斗。
 - 按 L → 进入 SCENE_LEADERBOARD，查看排行榜。
 
@@ -89,13 +90,15 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 | 开始 | Enter/Space（标题画面）或点击 START 按钮 |
 | 排行榜 | Space/Enter（结算画面→排行榜）或点击 CONTINUE 按钮 / Space/Enter（排行榜→标题）或点击 CONTINUE 按钮 |
 | 查看排行榜 | L（标题画面） |
-| **F9** | 调试：无敌切换（开启后不会被敌人/弹幕伤害，再按关闭） |
+| **F9** | 调试：无敌切换（开启后不会被敌人/弹弹伤害，再按关闭） |
+| **F5** | 调试：无条件触发 Nuke 清屏道具 |
 
 ### 调试快捷键说明
 
 | 快捷键 | 功能 | 使用场景 |
 |--------|------|---------|
 | F9 | 切换无敌模式 | 测试战斗流程、避免死亡中断测试 |
+| F5 | 无条件触发 Nuke | 测试 Nuke 道具的视觉效果和清屏功能 |
 
 ## 摄像机
 
@@ -239,6 +242,8 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 - **触发**：玩家碰到道具即激活。
 - **效果**：
   - 全屏敌人立即死亡，每个敌人独立爆炸粒子 + 黄色 `+得分` 飘字。
+  - 屏幕闪白：`FillRect` 全屏白色叠加，alpha 从 220 瞬间闪白后 0.5s 缓慢衰减复原。
+  - 冲击波圆：以玩家为中心，`DrawCircle` 双环（青色+白青色），半径从 0 以 1200px/s 迅速扩大到超出屏幕，alpha 同步从 1.0 渐弱至 0 fade out，营造爆炸冲击波视觉。
   - 屏幕强震（8px，20帧）。
   - 弹簧网格强力冲击（半径 600，强度 400）。
   - 玩家位置额外白色大闪光（50 粒子）。
@@ -298,12 +303,12 @@ GAME_OVER 画面显示最后一次致死敌人信息。
 - 被敌人碰到后失去 1 命：
   - **非最终死亡**（lives > 0）：小型爆炸（30+20 粒子）、中等震动（5px, 10帧）、移至地图中央、清除 150px 内敌人、2 秒闪烁无敌、能量效果重置。
   - **最终死亡**（lives = 0）：巨型爆炸、进入 SCENE_DEATH → SCENE_GAME_OVER 流程。
-- HUD 左下角显示 "LIVES: 3"。
+- HUD 左下角显示 "LIVES: 3"，右下角显示实时 FPS。
 - 重生期间玩家闪烁（每 8Hz 隐现交替），敌人碰撞无效。
 
 ## 高分排行榜
 
-本地 Top 10 分数排行，存档文件 `geometry_wars.sav`。
+本地 Top 10 分数排行，存档文件 `geometry.sav`。
 
 | 记录项 | 说明 |
 |--------|------|
@@ -341,4 +346,6 @@ GAME_OVER 画面显示最后一次致死敌人信息。
 - 遵守 GameLib.h 的 C++11 / GCC 4.9.2 限制。
 - 纯图元绘制（`DrawLine`、`FillCircle`、`FillTriangle`、`FillRect` 等），不依赖精灵素材。
 - 编译命令：`g++ -o geometry.exe geometry.cpp -mwindows`
-- 文件位置：`games/geometry/geometry.cpp`，通过 `#include "../../GameLib.h"` 引入。
+- 文件位置：`GeometryWars/geometry.cpp`，通过 `#include "../GameLib.h"` 引入。
+- 窗口可缩放（`Open` 第5参数 `resizable=true`），标题栏显示实时 FPS（`ShowFps(true)`）。
+- 不调用 `WaitFrame`，不限帧，全速运行以测试 GameLib 渲染性能；HUD 右下角显示实时帧率供观察。
