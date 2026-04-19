@@ -895,7 +895,10 @@ static void popupDraw(GameLib &g) {
         drawColor = COLOR_ARGB((uint32_t)(alpha * 255), COLOR_GET_R(popup.color), COLOR_GET_G(popup.color), COLOR_GET_B(popup.color));
     }
     int tw = (int)strlen(popup.text) * 8 * currentScale;
-    g.DrawTextScale(WIN_W / 2 - tw / 2, WIN_H / 2 - 20, popup.text, drawColor, currentScale);
+    int px = WIN_W / 2 - tw / 2;
+    int py = WIN_H / 2 - 20;
+    g.DrawTextScale(px + 1, py + 1, popup.text, COLOR_ARGB(100, 255, 255, 255), currentScale);
+    g.DrawTextScale(px, py, popup.text, drawColor, currentScale);
 }
 
 // ============================================================
@@ -963,6 +966,7 @@ static void tickerDraw(GameLib &g) {
         } else {
             drawColor = COLOR_ARGB(200, COLOR_GET_R(msg.color), COLOR_GET_G(msg.color), COLOR_GET_B(msg.color));
         }
+        g.DrawText(x + 1, y + 1, msg.text, COLOR_ARGB(100, 255, 255, 255));
         g.DrawText(x, y, msg.text, drawColor);
     }
 }
