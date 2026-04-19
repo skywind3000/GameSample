@@ -6,7 +6,7 @@
 
 ```
 GeometryWars/
-├── geometry.cpp      # 游戏源码（单文件，~1400 行）
+├── geometry.cpp      # 游戏源码（单文件，~2050 行）
 ├── design.md         # 游戏设计文档（玩法、敌人、计分、操控）
 ├── spec.md           # 技术文档（本文档）
 ├── assets.md         # 资源列表（音效素材索引）
@@ -272,7 +272,61 @@ struct Popup { char text[32]; uint32_t color; float life; float maxLife; int sca
 - 最后 0.5s：alpha 渐隐
 - 屏幕中央显示，每局每种成就只触发一次
 
-### 4.9 排行榜条目
+### 4.9 跑马灯事件通知（Ticker）
+
+```cpp
+#define MAX_TICKER 4
+struct TickerMsg {
+    char text[100];     // 事件描述文字（最长 100 字符，超出截断）
+    uint32_t color;     // 文字颜色（ARGB）
+    float life;         // 总显示时间（秒，固定 3.0s）
+    float timer;        // 已显示时间（秒）
+    bool active;        // 是否活跃
+};
+static TickerMsg tickerMsgs[MAX_TICKER];
+```
+
+**短语池**：
+
+```cpp
+static const char *jackPhrases[] = {  // 5 条，随机选择
+    "THE SWARM RISES FROM EVERY CORNER!",
+    "SHADOWS CONVERGE - ENEMIES SURGING FROM ALL SIDES!",
+    "THE HIVE HAS AWAKENED - INVASION INBOUND!",
+    "FOUR WALLS BREACHED - DENSITY CRITICAL!",
+    "NOWHERE TO HIDE - THEY COME FROM EVERYWHERE!"
+};
+static const char *bhPhrases[] = {     // 5 条，随机选择
+    "GRAVITATIONAL ANOMALY DETECTED - CAUTION ADVISED!",
+    "A SINGULARITY FORMS - ALL TRAJECTORIES BENDING!",
+    "THE VOID AWAKENS - SPACE ITSELF IS WARPING!",
+    "GRAVITY WELL ACTIVE - NOTHING ESCAPES ITS PULL!",
+    "DIMENSIONAL RIFT - REALITY COLLAPSING INWARD!"
+};
+```
+
+**API**：
+
+| 函数 | 说明 |
+|------|------|
+| `tickerAdd(text, color)` | 添加一条消息到队列。用 `strncpy` 截断保护（99 字符 + `\0`）。找空闲 slot；全满时替换最接近结束的 |
+| `tickerUpdate(dt)` | 更新所有活跃 slot 的 timer，超时后 `active = false` |
+| `tickerDraw(g)` | 绘制所有活跃 slot |
+
+**动画**：
+- 滑入阶段（0.4s）：从屏幕右侧外滑入到 x=20 位置
+- 保持阶段（2.1s）：停留在 x=20
+- 滑出阶段（0.5s）：从 x=20 向左滑出屏幕外
+- 滑出时 alpha 从 200 渐隐到 0
+- 多条消息垂直排列：y = 35 + i * 15
+
+**调用方**：
+- Jack 涌入触发时：`tickerAdd(jackPhrases[rand()%5], COLOR_ARGB(255, 255, 80, 60))`（霓虹红色）
+- Black Hole 爆炸时：`tickerAdd(bhPhrases[rand()%5], COLOR_ARGB(255, 200, 60, 80))`（深红色）
+- F6 调试触发 Jack：同上
+- `resetGame()`：`for (i=0..MAX_TICKER) tickerMsgs[i].active = false`
+
+### 4.10 排行榜条目
 
 ```cpp
 struct LBEntry { int score; float time; int kills; int combo; };
@@ -694,14 +748,15 @@ camY += (ty - camY) * 0.1f;
 4. 地图边框（drawMapBorder）
 5. 子弹（drawBullets）
 6. Black Hole（blackHolesDraw）
-6. 敌人（drawEnemies）
-7. 玩家（drawPlayer，仅存活时，含拖尾、外层轮廓、重生闪烁和能量金光）
-8. 道具（powerupsDraw，含 Nuke 和 Energy）
-9. 粒子（particlesDraw）
-10. 浮动文字（floatTextsDraw）
-11. 弹出通知（popupDraw）
-12. HUD（drawHUD，含生命、能量条、右下角 FPS）
-13. Nuke FX（冲击波圆 + 闪白叠加，仅在 nukeFxActive 时绘制）
+7. 敌人（drawEnemies）
+8. 玩家（drawPlayer，仅存活时，含拖尾、外层轮廓、重生闪烁和能量金光）
+9. 道具（powerupsDraw，含 Nuke 和 Energy）
+10. 粒子（particlesDraw）
+11. 浮动文字（floatTextsDraw）
+12. 弹出通知（popupDraw）
+13. 跑马灯通知（tickerDraw）
+14. HUD（drawHUD，含生命、能量条、右下角 FPS）
+15. Nuke FX（冲击波圆 + 闪白叠加，仅在 nukeFxActive 时绘制）
 ```
 
 **特殊效果**：
@@ -739,13 +794,13 @@ while (!game.IsClosed()) {
 
 | 子函数 | 职责 |
 |--------|------|
-| `updatePlayer(g, dt)` | 玩家移动 + 瞄准 |
+| `updatePlayer(g, dt)` | 玩家移动 + 瞄准 + Black Hole 对玩家引力 |
 | `updateShooting(g, dt)` | 射击逻辑（含能量散射） |
 | `updateBullets(dt)` | 子弹移动 + 边界消失 |
 | `enemiesUpdate(dt)` | 敌人 AI 移动 |
-| `updateCollisions(g)` | 子弹vs敌人 + 玩家vs敌人 + 玩家vs道具碰撞 |
+| `updateCollisions(g)` | 子弹vs敌人 + 玩家vs敌人 + 玩家vs道具 + 子弹vs BH + 玩家vs BH 碰撞 |
 | `updateTimers(dt)` | combo/energy/respawn/shake 计时器 |
-| `updateSpawner(g, dt)` | 敌人生成 + 道具生成 |
+| `updateSpawner(g, dt)` | 敌人生成 + 道具生成 + Jack 涌入 + Black Hole 生成 |
 
 总调度：
 ```cpp
@@ -754,10 +809,12 @@ static void gameUpdate(GameLib &g, float dt) {
     updateShooting(g, dt);
     updateBullets(dt);
     enemiesUpdate(dt);
+    blackHolesUpdate(dt);
     updateCollisions(g);
     particlesUpdate(dt);
     floatTextsUpdate(dt);
     popupUpdate(dt);
+    tickerUpdate(dt);
     powerupsUpdate(dt);
     gridUpdate(dt);
     starsUpdate(dt);
@@ -771,6 +828,8 @@ static void gameUpdate(GameLib &g, float dt) {
 ### 9.1 调试功能
 - **F9**：切换无敌模式（开启后不会被敌人/弹幕伤害）
 - **F5**：无条件触发 Nuke（测试闪白+冲击波视觉效果）
+- **F6**：触发 Jack 涌入事件（测试蜂群涌入效果）
+- **F7**：触发 Black Hole 引力场（在玩家右侧 200px 生成一个 BH）
 
 ### 9.2 限制
 - 最大子弹数 150，超过后无法射击（会等待空闲槽位）
@@ -796,7 +855,7 @@ static void gameUpdate(GameLib &g, float dt) {
 | `GetDeltaTime` | 帧间隔 |
 | `GetTime` | 运行总时间（标题脉冲、闪烁文字） |
 | `IsClosed` | 主循环条件 |
-| `IsKeyPressed` | ESC、F9、Enter、R |
+| `IsKeyPressed` | ESC、F5、F6、F7、F9、Enter、R |
 | `IsKeyDown` | WASD 移动 |
 | `IsMouseDown` | 左键射击 |
 | `GetMouseX / GetMouseY` | 瞄准 |
@@ -823,6 +882,11 @@ static void gameUpdate(GameLib &g, float dt) {
 - [x] 历史最高分/最长时间存档系统
 - [x] 多命系统（3 命，重生无敌 2 秒，清除附近敌人）
 - [x] 能量道具（击杀掉落，5 发扇形散射，5 秒持续）
+- [x] 敌人多样化（新增蛇行者 Weaver + 绕行者 Orbiter，5 种敌人类型）
+- [x] 玩家外观增强（拖尾残影 + 推进粒子 + 双层轮廓）
+- [x] 连续递增难度（无上限封顶，公式化 spawnInterval 和 maxOnScreen）
+- [x] 突发事件系统（Jack 涌入 + Black Hole 引力场）
+- [x] 跑马灯事件通知（Ticker 队列，4 条缓存，滑入/滑出动画）
 - [ ] Boss 敌人（超大血量，特殊攻击模式）
 - [x] 屏幕文字通知（Achievement Popup：连击/击杀/道具里程碑）
 - [x] 死亡原因提示（GAME_OVER 显示 "KILLED BY: [敌人名]" + 图标）
@@ -860,3 +924,11 @@ static void gameUpdate(GameLib &g, float dt) {
 | 2026-04-19 | Nuke 道具视觉增强：拾取瞬间屏幕闪白（FillRect alpha 220→0，0.5s 复原）+ 冲击波圆（双环 DrawCircle 从玩家中心扩展，1200px/s，alpha fade out） |
 | 2026-04-19 | 调试快捷键 F5 无条件触发 Nuke；HUD 右下角显示实时 FPS（GetFPS） |
 | 2026-04-19 | 存档文件名改为 geometry.sav；FPS 颜色调亮为白色；文档补充不限帧设计说明（不调用 WaitFrame，用于测试 GameLib 性能） |
+| 2026-04-20 | 道具视觉增强：信标环（DrawCircle 从15→45px 扩展，alpha 120→0，两圈错开）+ 标签文字（NUKE/ENERGY，alpha 180）+ 剩余 3s 闪烁提示 |
+| 2026-04-20 | 敌人多样化：新增蛇行者（Weaver，五边形，蛇形正弦移动）+ 绕行者（Orbiter，大圆，弧线环绕）；重命名原坦克大圆→绕行者；蜂群圆改回追逐玩家 |
+| 2026-04-20 | 玩家外观增强：拖尾残影（12帧历史，alpha 100→0，0.7→1.0 缩放）+ 推进粒子（青色/白色，350~600px/s，±30°）+ 双层轮廓（1.3x 外描边，半透明青白） |
+| 2026-04-20 | 能量道具颜色改为橙金色（255,180,60），远离蜂群圆橙色和蛇行者黄色；推进粒子颜色改为青/白色，远离黄色敌人 |
+| 2026-04-20 | 连续递增难度：spawnInterval 公式 max(0.10, 0.35-gameTime*0.001)，maxOnScreen 公式 min(60, 15+gameTime/10)，不再 120s 封顶 |
+| 2026-04-20 | 突发事件系统：Jack 涌入（递减间隔涌入蜂群圆，暂停常规生成）+ Black Hole 引力场（吸引敌人+子弹+轻微拉扯玩家，吸入10个后爆炸释放8蜂群圆） |
+| 2026-04-20 | 调试快捷键 F6 触发 Jack 涌入 + F7 触发 Black Hole |
+| 2026-04-20 | 跑马灯事件通知：TickerMsg 队列（MAX_TICKER=4），滑入→保持→滑出动画，strncpy 截断保护（100字符），Jack/BH 爆炸时随机短语 + 霓虹红/深红颜色 |

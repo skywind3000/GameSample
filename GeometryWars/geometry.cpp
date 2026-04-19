@@ -122,6 +122,30 @@ static int shakeFrames = 0;
 static float energyTimer = 0.0f;
 
 // -- Events --
+#define MAX_TICKER 4
+struct TickerMsg {
+    char text[100];
+    uint32_t color;
+    float life;       // total display time
+    float timer;      // elapsed time
+    bool active;
+};
+static void tickerAdd(const char *text, uint32_t color);
+static TickerMsg tickerMsgs[MAX_TICKER];
+static const char *jackPhrases[] = {
+    "THE SWARM RISES FROM EVERY CORNER!",
+    "SHADOWS CONVERGE - ENEMIES SURGING FROM ALL SIDES!",
+    "THE HIVE HAS AWAKENED - INVASION INBOUND!",
+    "FOUR WALLS BREACHED - DENSITY CRITICAL!",
+    "NOWHERE TO HIDE - THEY COME FROM EVERYWHERE!"
+};
+static const char *bhPhrases[] = {
+    "GRAVITATIONAL ANOMALY DETECTED - CAUTION ADVISED!",
+    "A SINGULARITY FORMS - ALL TRAJECTORIES BENDING!",
+    "THE VOID AWAKENS - SPACE ITSELF IS WARPING!",
+    "GRAVITY WELL ACTIVE - NOTHING ESCAPES ITS PULL!",
+    "DIMENSIONAL RIFT - REALITY COLLAPSING INWARD!"
+};
 static float jackTimer = 0.0f;
 static bool jackActive = false;
 static float jackSpawnTimer = 0.0f;
@@ -242,6 +266,7 @@ static void resetGame() {
     combo5Shown = false; combo10Shown = false;
     kills50Shown = false; kills100Shown = false; kills200Shown = false;
     popup.life = 0;
+    for (int i = 0; i < MAX_TICKER; i++) tickerMsgs[i].active = false;
     lbHighlight = -1;
     gridInit();
     starsInit();
@@ -607,7 +632,7 @@ static void blackHolesUpdate(float dt) {
             bh.explodeTimer = 0;
             shake(5, 12);
             spawnExplosion(bh.x, bh.y, COLOR_ARGB(255, 160, 60, 220), 30);
-            showPopup("BLACK HOLE BURST!", COLOR_ARGB(255, 160, 60, 220), 3);
+            tickerAdd(bhPhrases[rand() % 5], COLOR_ARGB(255, 200, 60, 80));
             gridImpulse(bh.x, bh.y, 300, 200);
             // Release 8 small enemies from BH
             for (int k = 0; k < 8; k++) {
@@ -871,6 +896,75 @@ static void popupDraw(GameLib &g) {
     }
     int tw = (int)strlen(popup.text) * 8 * currentScale;
     g.DrawTextScale(WIN_W / 2 - tw / 2, WIN_H / 2 - 20, popup.text, drawColor, currentScale);
+}
+
+// ============================================================
+// Ticker (scrolling event notification queue)
+// ============================================================
+static void tickerAdd(const char *text, uint32_t color) {
+    // Find an inactive slot, or use oldest active if full
+    int slot = -1;
+    for (int i = 0; i < MAX_TICKER; i++) {
+        if (!tickerMsgs[i].active) { slot = i; break; }
+    }
+    if (slot == -1) {
+        // All full: find the one closest to finishing
+        float bestLife = 999;
+        for (int i = 0; i < MAX_TICKER; i++) {
+            float remaining = tickerMsgs[i].life - tickerMsgs[i].timer;
+            if (remaining < bestLife) { bestLife = remaining; slot = i; }
+        }
+    }
+    strncpy(tickerMsgs[slot].text, text, 99);
+    tickerMsgs[slot].text[99] = '\0';
+    tickerMsgs[slot].color = color;
+    tickerMsgs[slot].life = 3.0f;
+    tickerMsgs[slot].timer = 0;
+    tickerMsgs[slot].active = true;
+}
+
+static void tickerUpdate(float dt) {
+    for (int i = 0; i < MAX_TICKER; i++) {
+        if (!tickerMsgs[i].active) continue;
+        tickerMsgs[i].timer += dt;
+        if (tickerMsgs[i].timer >= tickerMsgs[i].life) {
+            tickerMsgs[i].active = false;
+        }
+    }
+}
+
+static void tickerDraw(GameLib &g) {
+    float slideInDur = 0.4f;
+    float slideOutDur = 0.5f;
+    int yOffset = 35;
+    for (int i = 0; i < MAX_TICKER; i++) {
+        if (!tickerMsgs[i].active) continue;
+        TickerMsg &msg = tickerMsgs[i];
+        float t = msg.timer;
+        float total = msg.life;
+        int tw = (int)strlen(msg.text) * 8;
+        int y = yOffset + i * 15;
+
+        int x;
+        if (t < slideInDur) {
+            float progress = t / slideInDur;
+            x = WIN_W + 10 - (int)(progress * (WIN_W + 10 + tw + 20));
+        } else if (t < total - slideOutDur) {
+            x = 20;
+        } else {
+            float progress = (t - (total - slideOutDur)) / slideOutDur;
+            x = 20 - (int)(progress * (tw + 20));
+        }
+
+        uint32_t drawColor;
+        if (t >= total - slideOutDur) {
+            float alpha = 1.0f - (t - (total - slideOutDur)) / slideOutDur;
+            drawColor = COLOR_ARGB((uint32_t)(alpha * 200), COLOR_GET_R(msg.color), COLOR_GET_G(msg.color), COLOR_GET_B(msg.color));
+        } else {
+            drawColor = COLOR_ARGB(200, COLOR_GET_R(msg.color), COLOR_GET_G(msg.color), COLOR_GET_B(msg.color));
+        }
+        g.DrawText(x, y, msg.text, drawColor);
+    }
 }
 
 // ============================================================
@@ -1601,6 +1695,7 @@ static void gameUpdate(GameLib &g, float dt) {
     particlesUpdate(dt);
     floatTextsUpdate(dt);
     popupUpdate(dt);
+    tickerUpdate(dt);
     powerupsUpdate(dt);
     gridUpdate(dt);
     starsUpdate(dt);
@@ -1679,7 +1774,7 @@ int main() {
             jackSpawnTimer = 0;
             jackCount = 0;
             jackTotal = 25;
-            showPopup("JACK INVASION!", COLOR_ARGB(255, 255, 220, 50), 3);
+            tickerAdd(jackPhrases[rand() % 5], COLOR_ARGB(255, 255, 80, 60));
             shake(5, 10);
         }
 
@@ -1769,6 +1864,7 @@ int main() {
                 particlesDraw(game);
                 floatTextsDraw(game);
                 popupDraw(game);
+                tickerDraw(game);
                 drawHUD(game);
 
                 // Nuke FX: shockwave circle + white flash overlay
@@ -1900,6 +1996,7 @@ int main() {
                 }
 
                 popupDraw(game);
+                tickerDraw(game);
 
                 if (goTimer > 2.0f) {
                     // CONTINUE button (mouse clickable)

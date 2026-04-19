@@ -55,11 +55,12 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 - 开局直接进入战斗，无预告、无波次间歇。
 - 敌人持续不断地从地图四周生成，不会停。
 - 早期只有少量简单敌人，随时间推移敌人越来越多、越来越快。
-- 所有 4 种敌人类型在游戏开始就陆续出现，不会等很久：
+- 所有 5 种敌人类型在游戏开始就陆续出现，不会等很久：
   - 蜂群圆：开局即有
-  - 追踪三角：约 15 秒后开始出现
-  - 弹跳方块：约 30 秒后开始出现
-  - 坦克大圆：约 60 秒后开始出现
+  - 追踪三角：约 30 秒后开始出现
+  - 弹跳方块：约 15 秒后开始出现
+  - 蛇行者：约 60 秒后开始出现
+  - 绕行者：约 90 秒后开始出现
 - 敌人数量从少到多递增，营造"越来越混乱"的压迫感。
 - 无 Boss，无波次，无关卡，纯粹无尽。
 
@@ -92,6 +93,8 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 | 查看排行榜 | L（标题画面） |
 | **F9** | 调试：无敌切换（开启后不会被敌人/弹弹伤害，再按关闭） |
 | **F5** | 调试：无条件触发 Nuke 清屏道具 |
+| **F6** | 调试：触发 Jack 涌入事件 |
+| **F7** | 调试：触发 Black Hole 引力场 |
 
 ### 调试快捷键说明
 
@@ -99,6 +102,8 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 |--------|------|---------|
 | F9 | 切换无敌模式 | 测试战斗流程、避免死亡中断测试 |
 | F5 | 无条件触发 Nuke | 测试 Nuke 道具的视觉效果和清屏功能 |
+| F6 | 触发 Jack 涌入 | 测试 Jack 涌入事件效果 |
+| F7 | 触发 Black Hole | 测试 Black Hole 引力场效果 |
 
 ## 摄像机
 
@@ -330,13 +335,46 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 - 弹出动画：0.2s 渐增 → 1.3s 保持 → 0.5s 渐隐（alpha fade out）。
 - 每局每种成就只触发一次（防重复）。
 
+## 跑马灯事件通知（Ticker）
+
+突发事件触发时，在屏幕上方显示跑马灯式事件通知，用小文字做剧情向描述，每条随机选一句。
+
+- **位置**：屏幕上方，y 基线 = 35，多条消息垂直排列（间距 15px）
+- **动画**：从右侧屏幕外滑入（0.3s）→ 保持显示（2.4s）→ 向左滑出屏幕（0.3s），总计 3s
+- **队列**：最多 4 条缓存，同时显示多条。队列满时新消息替换最接近结束的旧消息
+- **文字长度**：每条最长 100 字符（超出截断），8x8 小字体
+
+### Jack 涌入通知
+
+触发时随机选择一句（霓虹红色 `(255, 80, 60)`）：
+
+| # | 文字 |
+|---|------|
+| 1 | THE SWARM RISES FROM EVERY CORNER! |
+| 2 | SHADOWS CONVERGE - ENEMIES SURGING FROM ALL SIDES! |
+| 3 | THE HIVE HAS AWAKENED - INVASION INBOUND! |
+| 4 | FOUR WALLS BREACHED - DENSITY CRITICAL! |
+| 5 | NOWHERE TO HIDE - THEY COME FROM EVERYWHERE! |
+
+### Black Hole 爆炸通知
+
+爆炸时随机选择一句（深红色 `(200, 60, 80)`）：
+
+| # | 文字 |
+|---|------|
+| 1 | GRAVITATIONAL ANOMALY DETECTED - CAUTION ADVISED! |
+| 2 | A SINGULARITY FORMS - ALL TRAJECTORIES BENDING! |
+| 3 | THE VOID AWAKENED - SPACE ITSELF IS WARPING! |
+| 4 | DIMENSIONAL RIFT - REALITY COLLAPSING INWARD! |
+| 5 | GRAVITY WELL ACTIVE - NOTHING ESCAPES ITS PULL! |
+
 ## 死亡原因提示
 
 GAME_OVER 画面显示最后一次致死敌人信息。
 
 - 格式："KILLED BY: [敌人名]"，用该敌人的霓虹色显示。
-- 左侧附带敌人形状小图标（蜂群圆、追踪三角轮廓、弹跳方块轮廓、坦克大圆+内环）。
-- 敌人名：SWARM / CHASER / BOUNCER / TANK。
+- 左侧附带敌人形状小图标（蜂群圆、追踪三角轮廓、弹跳方块轮廓、绕行者大圆+内环、蛇行者五边形）。
+- 敌人名：SWARM / CHASER / BOUNCER / ORBITER / WEAVER。死于 Black Hole 时显示 "BLACK HOLE"。
 
 ## 多命系统
 
@@ -366,7 +404,7 @@ GAME_OVER 画面显示最后一次致死敌人信息。
 ## 屏幕震动
 
 - 击杀普通敌人时轻微震动（1px，持续 3 帧）。
-- 坦克大圆被击杀时中等震动（2px，持续 5 帧）。
+- 绕行者被击杀时中等震动（2px，持续 5 帧）。
 - 玩家死亡爆炸时最强震动（8px，持续 20 帧）。
 
 ## 音效
