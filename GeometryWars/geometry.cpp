@@ -59,7 +59,7 @@
 // ============================================================
 struct GridPt  { float x, y, vx, vy; };
 struct Bullet  { float x, y, vx, vy; bool active; };
-struct Enemy   { float x, y, vx, vy; int type; int hp; int maxHp; float r; float speed; bool active; float angle; };
+struct Enemy   { float x, y, vx, vy; int type; int hp; int maxHp; float r; float speed; bool active; float angle; float timer; };
 struct Particle{ float x, y, vx, vy; uint32_t color; float life; float maxLife; float sz; };
 struct FloatText { float x, y, vy; char text[16]; uint32_t color; float life; float maxLife; };
 struct PowerUp { float x, y, r; float life; float pulse; bool active; int type; }; // type 0 = nuke, 1 = energy
@@ -157,7 +157,8 @@ static const char *enemyTypeName(int type) {
         case 0: return "SWARM";
         case 1: return "CHASER";
         case 2: return "BOUNCER";
-        case 3: return "TANK";
+        case 3: return "ORBITER";
+        case 4: return "WEAVER";
         default: return "UNKNOWN";
     }
 }
@@ -167,7 +168,8 @@ static uint32_t enemyColor(int type) {
         case 0: return COLOR_ARGB(255, 255, 150, 40);   // orange - Swarm
         case 1: return COLOR_ARGB(255, 255, 80, 140);    // pink - Chaser
         case 2: return COLOR_ARGB(255, 80, 255, 80);     // green - Bouncer
-        case 3: return COLOR_ARGB(255, 160, 60, 220);    // purple - Tank
+        case 3: return COLOR_ARGB(255, 160, 60, 220);    // purple - Orbiter
+        case 4: return COLOR_ARGB(255, 255, 220, 50);    // yellow - Weaver
         default: return COLOR_WHITE;
     }
 }
@@ -532,7 +534,7 @@ static void triggerNuke(GameLib &g) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         if (!enemies[i].active) continue;
         Enemy &e = enemies[i];
-        int pts[4] = { 50, 100, 150, 300 };
+        int pts[5] = { 50, 100, 150, 300, 200 };
         int earned = pts[e.type];
         score += earned;
         kills++; totalKills++;
@@ -556,18 +558,25 @@ static void spawnEnemy(int type, float x, float y) {
             e.type = type;
             e.x = x; e.y = y;
             e.angle = 0; e.r = 8; e.speed = 80; e.hp = 1; e.maxHp = 1;
-            e.vx = e.vy = 0;
+            e.vx = e.vy = 0; e.timer = 0;
             switch (type) {
                 case 0: e.r = 10; e.speed = 60; break;
                 case 1: e.r = 12; e.speed = 140; break;
                 case 2: e.r = 14; e.speed = 100; e.hp = e.maxHp = 2; break;
-                case 3: e.r = 22; e.speed = 45; e.hp = e.maxHp = 5; break;
+                case 3: e.r = 22; e.speed = 50; e.hp = e.maxHp = 5; e.timer = (float)(rand() % 600) / 100.0f; break;
+                case 4: e.r = 12; e.speed = 120; e.hp = 2; e.maxHp = 2; e.timer = (float)(rand() % 600) / 100.0f; break;
             }
             if (type == 2) {
                 float a = (float)rand() / RAND_MAX * (float)(2.0 * M_PI);
                 e.vx = (float)cos(a) * e.speed;
                 e.vy = (float)sin(a) * e.speed;
                 e.angle = (float)rand() / RAND_MAX * (float)(2.0 * M_PI);
+            }
+            if (type == 4) {
+                float a = (float)rand() / RAND_MAX * (float)(2.0 * M_PI);
+                e.vx = (float)cos(a) * e.speed;
+                e.vy = (float)sin(a) * e.speed;
+                e.angle = a;
             }
             return;
         }
@@ -622,26 +631,50 @@ static void enemiesUpdate(float dt) {
                 e.angle -= (float)(4.0 * M_PI) * dt;
                 break;
             }
-            case 3: { // Tank - slow drift toward player
+            case 3: { // Orbiter - orbit around player at a distance
                 float dx = px - e.x, dy = py - e.y;
                 float d = dist(e.x, e.y, px, py);
-                if (d > 1) { e.vx += (dx / d) * e.speed * 1.5f * dt; e.vy += (dy / d) * e.speed * 1.5f * dt; }
-                float f = 1.0f - 2.0f * dt; if (f < 0.8f) f = 0.8f;
+                if (d > 1) {
+                    float targetDist = 180.0f;
+                    float radialForce = (d - targetDist) / d;
+                    e.vx += (dx / d) * radialForce * e.speed * 2.0f * dt;
+                    e.vy += (dy / d) * radialForce * e.speed * 2.0f * dt;
+                    e.timer += dt;
+                    float tangAngle = (float)atan2(dy, dx) + (float)M_PI / 2.0f;
+                    e.vx += (float)cos(tangAngle) * e.speed * 3.0f * dt;
+                    e.vy += (float)sin(tangAngle) * e.speed * 3.0f * dt;
+                }
+                float f = 1.0f - 3.0f * dt; if (f < 0.8f) f = 0.8f;
                 e.vx *= f; e.vy *= f;
+                e.angle += 2.0f * dt;
+                break;
+            }
+            case 4: { // Weaver - sinusoidal weaving motion
+                e.timer += dt;
+                float baseAngle = e.angle;
+                float weaveOffset = (float)sin(e.timer * 3.0f) * 0.8f;
+                float moveAngle = baseAngle + weaveOffset;
+                e.vx = (float)cos(moveAngle) * e.speed;
+                e.vy = (float)sin(moveAngle) * e.speed;
                 break;
             }
         }
         e.x += e.vx * dt;
         e.y += e.vy * dt;
 
-        if (e.type != 2) {
+        if (e.type != 2 && e.type != 4) {
             clamp(e.x, e.r, MAP_W - e.r);
             clamp(e.y, e.r, MAP_H - e.r);
-        } else {
+        } else if (e.type == 2) {
             if (e.x < e.r) { e.x = e.r; e.vx = -e.vx; }
             if (e.x > MAP_W - e.r) { e.x = MAP_W - e.r; e.vx = -e.vx; }
             if (e.y < e.r) { e.y = e.r; e.vy = -e.vy; }
             if (e.y > MAP_H - e.r) { e.y = MAP_H - e.r; e.vy = -e.vy; }
+        } else { // Weaver - bounce off walls like Bouncer
+            if (e.x < e.r) { e.x = e.r; e.vx = -e.vx; e.angle = (float)atan2(e.vy, e.vx); }
+            if (e.x > MAP_W - e.r) { e.x = MAP_W - e.r; e.vx = -e.vx; e.angle = (float)atan2(e.vy, e.vx); }
+            if (e.y < e.r) { e.y = e.r; e.vy = -e.vy; e.angle = (float)atan2(e.vy, e.vx); }
+            if (e.y > MAP_H - e.r) { e.y = MAP_H - e.r; e.vy = -e.vy; e.angle = (float)atan2(e.vy, e.vx); }
         }
     }
 }
@@ -833,11 +866,11 @@ static void drawEnemies(GameLib &g) {
         uint32_t c = enemyColor(e.type);
         uint32_t gl = COLOR_ARGB(60, COLOR_GET_R(c), COLOR_GET_G(c), COLOR_GET_B(c));
         switch (e.type) {
-            case 0: // Circle
+            case 0: // Swarm - circle
                 g.FillCircle(sx, sy, (int)e.r, c);
                 g.FillCircle(sx, sy, (int)(e.r * 1.8f), gl);
                 break;
-            case 1: // Triangle
+            case 1: // Chaser - triangle
                 for (int j = 0; j < 3; j++) {
                     float a1 = e.angle + j * (float)(2.0f * M_PI / 3);
                     float a2 = e.angle + (j + 1) * (float)(2.0f * M_PI / 3);
@@ -846,7 +879,7 @@ static void drawEnemies(GameLib &g) {
                 }
                 g.FillCircle(sx, sy, (int)e.r * 2, gl);
                 break;
-            case 2: // Diamond (rotated square)
+            case 2: // Bouncer - diamond (rotated square)
                 for (int j = 0; j < 4; j++) {
                     float a1 = (float)M_PI / 4 + e.angle + j * (float)(M_PI / 2);
                     float a2 = (float)M_PI / 4 + e.angle + (j + 1) * (float)(M_PI / 2);
@@ -855,11 +888,21 @@ static void drawEnemies(GameLib &g) {
                 }
                 g.FillCircle(sx, sy, (int)e.r * 1.5f, gl);
                 break;
-            case 3: // Tank circle with ring
+            case 3: // Orbiter - circle with ring
                 g.FillCircle(sx, sy, (int)e.r, c);
                 g.FillCircle(sx, sy, (int)(e.r * 1.6f), gl);
                 g.DrawCircle(sx, sy, (int)(e.r * 0.6f), COLOR_ARGB(200, 220, 120, 255));
                 break;
+            case 4: { // Weaver - pentagon (5-sided)
+                for (int j = 0; j < 5; j++) {
+                    float a1 = e.angle + j * (float)(2.0f * M_PI / 5);
+                    float a2 = e.angle + (j + 1) * (float)(2.0f * M_PI / 5);
+                    g.DrawLine(sx + (int)(cos(a1) * e.r), sy + (int)(sin(a1) * e.r),
+                               sx + (int)(cos(a2) * e.r), sy + (int)(sin(a2) * e.r), c);
+                }
+                g.FillCircle(sx, sy, (int)(e.r * 1.6f), gl);
+                break;
+            }
         }
     }
 }
@@ -983,7 +1026,7 @@ static void updateCollisions(GameLib &g) {
                 bullets[i].active = false;
                 enemies[j].hp--;
                 if (enemies[j].hp <= 0) {
-                    int pts[4] = { 50, 100, 150, 300 };
+                    int pts[5] = { 50, 100, 150, 300, 200 };
                     combo++; comboTimer = COMBO_TIMEOUT;
                     if (combo > highestCombo) highestCombo = combo;
                     int earned = pts[enemies[j].type] * combo;
@@ -998,7 +1041,7 @@ static void updateCollisions(GameLib &g) {
                     sprintf(buf, "+%d", earned);
                     spawnFloatText(enemies[j].x, enemies[j].y - 10, buf, COLOR_YELLOW);
 
-                    int baseDrop[] = { 7, 10, 12, 17 };
+                    int baseDrop[] = { 7, 10, 12, 17, 10 };
                     int activeEnemies = 0;
                     for (int k = 0; k < MAX_ENEMIES; k++) if (enemies[k].active) activeEnemies++;
                     float dropScale = 1.0f;
@@ -1139,18 +1182,16 @@ static void updateSpawner(GameLib &g, float dt) {
     if (g.GetScene() != SCENE_COMBAT || !playerAlive) return;
     gameTime += dt;
 
-    int maxType = 0;
-    if (gameTime > 15.0f) maxType = 1;
-    if (gameTime > 30.0f) maxType = 2;
-    if (gameTime > 60.0f) maxType = 3;
-
     float spawnInterval = 0.35f;
     if (gameTime > 120.0f) spawnInterval = 0.18f;
+    else if (gameTime > 90.0f) spawnInterval = 0.20f;
     else if (gameTime > 60.0f) spawnInterval = 0.22f;
-    else if (gameTime > 30.0f) spawnInterval = 0.28f;
+    else if (gameTime > 30.0f) spawnInterval = 0.25f;
+    else if (gameTime > 15.0f) spawnInterval = 0.30f;
 
     int maxOnScreen = 15;
     if (gameTime > 120.0f) maxOnScreen = 40;
+    else if (gameTime > 90.0f) maxOnScreen = 35;
     else if (gameTime > 60.0f) maxOnScreen = 30;
     else if (gameTime > 30.0f) maxOnScreen = 25;
     else if (gameTime > 15.0f) maxOnScreen = 20;
@@ -1163,7 +1204,30 @@ static void updateSpawner(GameLib &g, float dt) {
     spawnTimer += dt;
     if (spawnTimer >= spawnInterval && activeCount < maxOnScreen) {
         spawnTimer = 0;
-        int type = rand() % (maxType + 1);
+        int type;
+        if (gameTime <= 15.0f) {
+            type = 0; // Only Wanderers
+        } else if (gameTime <= 30.0f) {
+            type = (rand() % 3 == 0) ? 2 : 0; // 75% Wanderer, 25% Bouncer
+        } else if (gameTime <= 60.0f) {
+            int roll = rand() % 10;
+            if (roll < 5) type = 0;       // 50% Wanderer
+            else if (roll < 8) type = 1;   // 30% Chaser
+            else type = 2;                  // 20% Bouncer
+        } else if (gameTime <= 90.0f) {
+            int roll = rand() % 10;
+            if (roll < 4) type = 0;       // 40% Wanderer
+            else if (roll < 6) type = 1;   // 20% Chaser
+            else if (roll < 8) type = 2;   // 20% Bouncer
+            else type = 4;                  // 20% Weaver
+        } else {
+            int roll = rand() % 10;
+            if (roll < 3) type = 0;       // 30% Wanderer
+            else if (roll < 5) type = 1;   // 20% Chaser
+            else if (roll < 7) type = 2;   // 20% Bouncer
+            else if (roll < 8) type = 3;   // 10% Orbiter
+            else type = 4;                  // 20% Weaver
+        }
         spawnFromEdge(type);
         g.PlayWAV(pickRandom(sounds.spawn, 8));
     }
@@ -1419,7 +1483,7 @@ int main() {
                 drawTextCentered(game, buf, WIN_H / 2 + 65, COLOR_YELLOW, 1);
 
                 // Death cause
-                if (killedByType >= 0 && killedByType <= 3) {
+                if (killedByType >= 0 && killedByType <= 4) {
                     uint32_t kc = enemyColor(killedByType);
                     sprintf(buf, "KILLED BY: %s", enemyTypeName(killedByType));
                     drawTextCentered(game, buf, WIN_H / 2 + 90, kc, 1);
@@ -1444,6 +1508,14 @@ int main() {
                             }
                             break;
                         case 3: game.FillCircle(iconX, iconY, 10, kc); game.DrawCircle(iconX, iconY, 5, COLOR_ARGB(200, 220, 120, 255)); break;
+                        case 4:
+                            for (int j = 0; j < 5; j++) {
+                                float a1 = j * (float)(2.0 * M_PI / 5);
+                                float a2 = (j + 1) * (float)(2.0 * M_PI / 5);
+                                game.DrawLine(iconX + (int)(cos(a1) * 8), iconY + (int)(sin(a1) * 8),
+                                              iconX + (int)(cos(a2) * 8), iconY + (int)(sin(a2) * 8), kc);
+                            }
+                            break;
                     }
                 }
 
