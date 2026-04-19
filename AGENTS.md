@@ -17,9 +17,8 @@
   - <game>.cpp           # 游戏源码
 - GameLib.h              # GameLib 游戏库（Win32 版，供参考）
 - GameLib.SDL.h          # GameLib 游戏库（SDL 版，供参考）
-- GameSound.h            # GameSound 多声道音频播放库
+- GameSound.h            # GameSound 多声道音频播放库（备份，功能已合并到 GameLib.h）
 - tools/                 # 工具演示程序
-  - sound_demo.cpp       # GameSound.h 音效演示程序
 ```
 
 ## Documentation
@@ -28,9 +27,8 @@
 |------|------|-----------|
 | `docs/manual.md` | GameLib.h 公开 API 接口说明 | 开发新游戏或查阅 API 时 |
 | `docs/quickref.md` | GameLib.h 快速 API 列表 | 开发新游戏时快速查阅 |
-| `docs/GameSound.md` | GameSound.h 技术规格文档 | 使用多声道音频播放时 |
 
-以上文档是 GameLib.h 和 GameSound.h API 的权威来源，开发游戏时应优先参考。
+以上文档是 GameLib.h API 的权威来源，开发游戏时应优先参考。
 
 ## Games
 
@@ -66,11 +64,6 @@
    - 游戏代码应保持简单易懂，避免过度抽象或设计模式滥用。
    - 优先使用 GameLib.h 的简单 API（如整数 ID 管理精灵），不要引入复杂的对象生命周期。
 
-4. **音效分工**
-   - **音效播放**（射击、爆炸、击杀等短音效）使用 `GameSound.h`，通过 `#define GAMESOUND_IMPLEMENTATION` + `#include "../GameSound.h"` 引入。GameSound 支持多声道、独立音量控制、循环播放，详见 `docs/GameSound.md`。
-   - **背景音乐**继续使用 GameLib.h 的 `PlayMusic`（支持 .mp3、.mid 格式），它适合长时间播放的 BGM 场景。
-   - 不要用 GameLib.h 的 `PlayWAV` 播放短音效，它的声道管理能力有限；也不要用 GameSound.h 播放 BGM，职责不同。
-
 ## Build
 
 ### 编译命令
@@ -81,10 +74,6 @@ g++ -o <game>.exe <game>.cpp -mwindows
 
 - 不需要 `-lwinmm -lgdi32` 等参数，GameLib.h 通过动态加载解决所有依赖。
 - 游戏源码通过 `#include "../GameLib.h"` 引入 GameLib。
-- **如果使用了 GameSound.h**（Win32 后端），需要额外链接 `-lwinmm`：
-  ```bash
-  g++ -o <game>.exe <game>.cpp -mwindows -lwinmm
-  ```
 
 ### 示例：编译几何大战
 
@@ -93,15 +82,6 @@ cd GeometryWars
 g++ -o geometry.exe geometry.cpp -mwindows
 ```
 
-### 示例：编译音效演示
-
-```bash
-cd tools
-g++ -o sound_demo.exe sound_demo.cpp -mwindows -lwinmm
-```
-
-**注意**：GameSound.h 需要链接 `-lwinmm` 库。
-
 ## Code Constraints
 
 ### 游戏开发规范
@@ -109,7 +89,6 @@ g++ -o sound_demo.exe sound_demo.cpp -mwindows -lwinmm
 - 只能使用 C++11 语法，不能用 C++14/17/20 特性。
 - 必须兼容 GCC 4.9.2（Dev-C++ 5 自带）。
 - 游戏文件放在独立目录下，通过 `#include "../GameLib.h"` 引入。
-- 音效部分通过 `#define GAMESOUND_IMPLEMENTATION` + `#include "../GameSound.h"` 引入 GameSound。
 - 保持 `GameLib game; game.Open(...); while (...) { ... }` 的上手模型。
 
 ### GameLib.h（仅参考，不在此仓库修改）
@@ -144,7 +123,7 @@ g++ -o sound_demo.exe sound_demo.cpp -mwindows -lwinmm
 ### 用 GameLib.h 做游戏
 
 1. **先理解需求**：问用户想要什么类型的游戏或功能，确认核心玩法。
-2. **读 API 文档**：阅读 `docs/manual.md` 或 `docs/quickref.md` 了解公开 API；如需音效功能，查阅 `docs/GameSound.md`。
+2. **读 API 文档**：阅读 `docs/manual.md` 或 `docs/quickref.md` 了解公开 API。
 3. **参考现有游戏**：查看 `Games` 表格中与目标功能最接近的游戏，参考其结构和实现方式。
 4. **优先用现有素材**：查看各游戏目录下的 `assets/`，优先复用已有音效。
 5. **先跑最小原型**：不要一开始就写完整游戏，先让基本功能跑起来（显示窗口、能操作），再逐步加功能。
