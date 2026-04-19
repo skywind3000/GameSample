@@ -6,17 +6,14 @@
 
 ```
 GeometryWars/
-├── geometry.cpp      # 游戏源码（单文件，~800 行）
+├── geometry.cpp      # 游戏源码（单文件，~1100 行）
 ├── design.md         # 游戏设计文档（玩法、敌人、计分、操控）
 ├── spec.md           # 技术文档（本文档）
-└── assets/sound/     # 音效资源
-    ├── click.wav         # 射击音效
-    ├── hit.wav           # 击中音效
-    ├── coin.wav          # 击杀音效
-    ├── explosion.wav     # 玩家死亡音效
-    ├── game_over.wav     # 游戏结束音效
-    ├── note_do_high.wav  # 开始游戏提示音
-    └── victory.wav       # 胜利音效
+├── assets.md         # 资源列表（音效素材索引）
+└── assets/           # 音效资源
+    ├── explosion-01.wav ~ explosion-08.wav  # 爆炸音效（8个变体）
+    ├── shoot-01.wav ~ shoot-04.wav          # 射击音效（4个变体）
+    └── spawn-01.wav ~ spawn-08.wav          # 生成音效（8个变体）
 ```
 
 ## 2. 编译配置
@@ -68,6 +65,8 @@ D:\Dev\mingw32\bin\g++.exe
 | `MAX_BULLETS` | 150 | 同时存在的最大子弹数 |
 | `MAX_ENEMIES` | 100 | 同时存在的最大敌人数 |
 | `MAX_PARTICLES` | 800 | 同时存在的最大粒子数 |
+| `MAX_FLOAT_TEXTS` | 30 | 同时存在的最大浮动文字数 |
+| `MAX_POWERUPS` | 5 | 同时存在的最大道具数 |
 
 ### 游戏参数
 
@@ -153,6 +152,49 @@ struct Particle {
 };
 ```
 
+### 4.5 浮动文字
+
+```cpp
+struct FloatText {
+    float x, y;       // 位置
+    float vy;         // 向上飘动速度（固定 -60px/s）
+    char text[16];    // 显示文字（如 "+150"）
+    uint32_t color;   // 颜色
+    float life;       // 当前生命值（秒）
+    float maxLife;    // 最大生命值（秒，固定 1.0s）
+};
+```
+
+**行为**：
+- 敌人死亡时在命中位置生成，显示 `+得分`（含连击倍率）
+- 以 60px/s 速度向上飘动
+- 1 秒生命周期，alpha 渐隐
+- 最多同时存在 30 个
+
+### 4.6 道具
+
+```cpp
+struct PowerUp {
+    float x, y;       // 位置
+    float r;          // 碰撞半径（15px）
+    float life;       // 剩余时间（秒，最大 8s）
+    float pulse;      // 脉冲动画计时
+    bool active;      // 是否活跃
+    int type;         // 类型：0=清屏(Nuke)
+};
+```
+
+**清屏道具 (Nuke)**：
+- **生成**：每 15~25 秒随机生成，距离玩家 > 200px
+- **外观**：霓虹青色菱形，脉冲呼吸动画，剩余 3 秒时闪烁
+- **触发**：玩家碰撞检测（距离 < 道具半径 + 12px）
+- **效果** (`triggerNuke`)：
+  1. 播放爆炸音效
+  2. 屏幕强震（8px，20帧）
+  3. 网格强力冲击（半径 600，强度 400）
+  4. 每个敌人独立爆炸 + 得分飘字
+  5. 玩家位置白色大闪光（50粒子）
+
 ## 5. 场景状态机
 
 使用 GameLib.h 的 `SetScene()` / `GetScene()` / `IsSceneChanged()` 机制管理游戏大状态。
@@ -180,9 +222,9 @@ SCENE_COMBAT (2) ───── 玩家被碰撞 ────→ SCENE_DEATH (3)
 - **摄像机**：不更新
 
 #### SCENE_COMBAT - 战斗
-- **更新**：调用 `gameUpdate()` 处理所有游戏逻辑
-- **绘制**：网格 → 地图边框 → 子弹 → 敌人 → 玩家 → 粒子 → HUD
-- **输入**：WASD 移动、鼠标瞄准、左键射击
+- **更新**：调用 `gameUpdate()` 处理所有游戏逻辑（含道具生成、浮动文字、道具碰撞）
+- **绘制**：网格 → 地图边框 → 子弹 → 敌人 → 玩家 → 道具 → 粒子 → 浮动文字 → HUD
+- **输入**：WASD 移动、鼠标瞄准、左键射击、道具拾取
 - **摄像机**：跟随玩家
 
 #### SCENE_DEATH - 玩家死亡动画
@@ -354,9 +396,10 @@ if (spawnTimer >= spawnInterval && activeCount < maxOnScreen) {
 #### 子弹 vs 敌人
 - **检测**：圆形碰撞，`dist(bullet, enemy) < enemy.r + 4`
 - **效果**：
+  - **命中火花**：从命中点生成 5~8 个白色高亮火花，沿子弹反方向反弹（±50° 散射，150~400 px/s，0.3~0.7s 寿命，3~6px 尺寸）
   - 子弹消失
   - 敌人 HP -1
-  - HP <= 0：触发击杀爆炸、网格冲击、屏幕震动、计分
+  - HP <= 0：触发击杀爆炸、网格冲击、屏幕震动、计分、浮动得分文字
   - 坦克（type 3）死亡时分裂为 3 个蜂群圆
 
 #### 玩家 vs 敌人
@@ -366,6 +409,12 @@ if (spawnTimer >= spawnInterval && activeCount < maxOnScreen) {
   - 切换到 `SCENE_DEATH`
   - 清除所有敌人
   - 触发巨型死亡爆炸（3 组粒子 + 强力网格冲击 + 强震动）
+
+#### 玩家 vs 道具
+- **检测**：圆形碰撞，`dist(player, powerup) < powerup.r + 12`
+- **效果**：
+  - 触发道具效果（清屏道具 = `triggerNuke()`）
+  - 道具消失
 
 ### 6.6 屏幕震动
 
@@ -447,14 +496,16 @@ camY += (ty - camY) * 0.1f;
 - 尝试两个路径（相对当前目录和相对上级目录）
 - 返回第一个存在的文件路径
 
-**音效映射**：
+**音效映射**（使用 `assets/` 下的变体文件，随机选择）：
 
 | 事件 | 音效文件 | 触发时机 |
 |------|---------|---------|
-| 射击 | `click.wav` | （代码中已定义但未在射击时调用，可选择添加） |
-| 玩家死亡 | `explosion.wav` | SCENE_DEATH 前 1 秒内 |
-| 游戏结束 | `game_over.wav` | 进入 SCENE_GAME_OVER 时 |
-| 开始游戏 | `note_do_high.wav` | 进入 SCENE_COMBAT 时 |
+| 射击 | `shoot-01.wav` ~ `shoot-04.wav` | 每次发射子弹时（4 个变体随机） |
+| 敌人击杀 | `explosion-01.wav` ~ `explosion-08.wav` | 敌人 HP 归零时（8 个变体随机） |
+| 敌人生成 | `spawn-01.wav` ~ `spawn-08.wav` | 每次从边缘生成敌人时（8 个变体随机） |
+| 玩家死亡 | `explosion-01.wav` | SCENE_DEATH 前 1 秒内 |
+| 游戏结束 | `explosion-02.wav` | 进入 SCENE_GAME_OVER 时 |
+| 开始游戏 | `spawn-01.wav` | 进入 SCENE_COMBAT 时 |
 
 ## 7. 渲染顺序
 
@@ -467,8 +518,10 @@ camY += (ty - camY) * 0.1f;
 4. 子弹（drawBullets）
 5. 敌人（drawEnemies）
 6. 玩家（drawPlayer，仅存活时）
-7. 粒子（particlesDraw）
-8. HUD（drawHUD）
+7. 道具（powerupsDraw）
+8. 粒子（particlesDraw）
+9. 浮动文字（floatTextsDraw）
+10. HUD（drawHUD）
 ```
 
 **特殊效果**：
@@ -511,6 +564,8 @@ while (!game.IsClosed()) {
 - 最大子弹数 150，超过后无法射击（会等待空闲槽位）
 - 最大敌人数 100，超过后无法生成新敌人
 - 最大粒子数 800，超过后无法生成新粒子
+- 最大浮动文字数 30，超过后不显示新文字
+- 最大道具数 5，超过后不生成新道具
 - 坦克分裂可能导致瞬间敌人数激增（1 个坦克 → 3 个蜂群圆）
 
 ### 9.3 物理注意事项
@@ -545,8 +600,10 @@ while (!game.IsClosed()) {
 
 ## 10. 未来可扩展方向
 
-- [ ] 添加射击音效（`sounds.click` 在射击时调用）
-- [ ] 添加敌人被击中文字提示
+- [x] 射击音效（shoot-01~04 随机播放）
+- [x] 敌人死亡浮动得分文字（向上飘动 fade out）
+- [x] 清屏道具（Nuke，全屏敌人爆炸）
+- [x] 子弹命中火花特效（白色反弹粒子）
 - [ ] 多命系统（3 命）
 - [ ] 能量道具（击杀敌人掉落，拾取后强化武器）
 - [ ] Boss 敌人（超大血量，特殊攻击模式）
@@ -563,3 +620,7 @@ while (!game.IsClosed()) {
 | 2026-04-18 | 提升子弹速度 35%（600 → 810） |
 | 2026-04-18 | Title 屏幕添加详细操作说明 |
 | 2026-04-18 | 使用 GameLib.h SetScene 机制管理游戏状态 |
+| 2026-04-19 | 添加音效系统（射击/击杀/生成随机变体播放） |
+| 2026-04-19 | 添加子弹命中火花特效（白色反弹粒子） |
+| 2026-04-19 | 添加敌人死亡浮动得分文字（向上飘动 fade out） |
+| 2026-04-19 | 添加清屏道具 Nuke（全屏敌人爆炸） |
