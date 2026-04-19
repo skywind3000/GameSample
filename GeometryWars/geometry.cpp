@@ -539,6 +539,23 @@ static void gameUpdate(GameLib &g, float dt) {
             for (int j = 0; j < MAX_ENEMIES; j++) {
                 if (!enemies[j].active) continue;
                 if (dist(bullets[i].x, bullets[i].y, enemies[j].x, enemies[j].y) < enemies[j].r + 4) {
+                    // Bright spark bounce effect - sparks fly back opposite to bullet direction
+                    float bulletAngle = (float)atan2(bullets[i].vy, bullets[i].vx);
+                    int sparkCount = 5 + rand() % 4; // 5~8 sparks
+                    for (int s = 0; s < sparkCount; s++) {
+                        // Spread around the opposite direction of bullet
+                        float spreadAngle = bulletAngle + (float)M_PI + (float)((rand() % 100 - 50) * M_PI / 180.0f);
+                        float spd = (float)(150.0 + rand() % 250); // faster: 150~400 px/s
+                        // Bright white-yellow core sparks (highly visible against colored explosions)
+                        uint32_t sparkColor = COLOR_ARGB(255, 255, 255, 200);
+                        spawnParticle(bullets[i].x, bullets[i].y,
+                                      (float)cos(spreadAngle) * spd,
+                                      (float)sin(spreadAngle) * spd,
+                                      sparkColor,
+                                      0.3f + (float)rand() / RAND_MAX * 0.4f, // longer life: 0.3~0.7s
+                                      3.0f + (float)(rand() % 4));             // bigger: 3~6px
+                    }
+
                     bullets[i].active = false;
                     enemies[j].hp--;
                     if (enemies[j].hp <= 0) {
