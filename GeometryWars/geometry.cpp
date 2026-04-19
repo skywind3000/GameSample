@@ -354,10 +354,12 @@ static void gridUpdate(float dt) {
         for (int c = 0; c < cols; c++) {
             GridPt &g = grid[r][c];
             float fx = (float)(c * GRID_SPACING), fy = (float)(r * GRID_SPACING);
+            // Spring physics: stiffness 12 + damping 5 gives ~0.3-0.5s recovery time
+            // dt*60 scaling keeps physics correct at 60FPS regardless of actual framerate
             g.vx += (fx - g.x) * 12.0f * dt;
             g.vy += (fy - g.y) * 12.0f * dt;
             float d = 1.0f - 5.0f * dt;
-            if (d < 0.85f) d = 0.85f;
+            if (d < 0.85f) d = 0.85f; // damping floor prevents oscillation at very low FPS
             g.vx *= d; g.vy *= d;
             g.x += g.vx * dt * 60.0f;
             g.y += g.vy * dt * 60.0f;
@@ -430,7 +432,7 @@ static void particlesUpdate(float dt) {
     for (int i = 0; i < MAX_PARTICLES; i++) {
         if (particles[i].life > 0) {
             particles[i].life -= dt;
-            particles[i].vx *= (1.0f - 4.0f * dt);
+            particles[i].vx *= (1.0f - 4.0f * dt); // friction: ~0.25s to halve speed at 60FPS
             particles[i].vy *= (1.0f - 4.0f * dt);
             particles[i].x += particles[i].vx * dt;
             particles[i].y += particles[i].vy * dt;
@@ -708,7 +710,7 @@ static void triggerNuke(GameLib &g) {
         if (!enemies[i].active) continue;
         Enemy &e = enemies[i];
         int pts[5] = { 50, 100, 150, 300, 200 };
-        int earned = pts[e.type];
+        int earned = pts[e.type]; // Nuke scores base value only (no combo multiplier) — free clear shouldn't boost combo
         score += earned;
         kills++; totalKills++;
         spawnExplosion(e.x, e.y, enemyColor(e.type), 20 + e.type * 8);
@@ -856,6 +858,7 @@ static void enemiesUpdate(float dt) {
 // Screen Shake
 // ============================================================
 static void shake(int amt, int frames) {
+    // Only keep strongest shake — small hits shouldn't interrupt big explosion visuals
     if (amt > shakeAmt) { shakeAmt = (float)amt; shakeFrames = frames; }
 }
 
@@ -1059,7 +1062,7 @@ static void cameraUpdate() {
     float tx = px - WIN_W / 2.0f, ty = py - WIN_H / 2.0f;
     clamp(tx, 0, MAP_W - WIN_W);
     clamp(ty, 0, MAP_H - WIN_H);
-    camX += (tx - camX) * 0.1f;
+    camX += (tx - camX) * 0.1f; // 10% per-frame lerp: smooth follow without lag
     camY += (ty - camY) * 0.1f;
 }
 
@@ -1244,7 +1247,7 @@ static void updatePlayer(GameLib &g, float dt) {
     clamp(px, 20, MAP_W - 20);
     clamp(py, 20, MAP_H - 20);
 
-    // Black Hole pull on player (weaker than enemies)
+    // Black Hole pull on player (30% strength — weaker than enemy pull, not lethal by itself)
     for (int i = 0; i < MAX_BLACK_HOLES; i++) {
         if (!blackHoles[i].active || blackHoles[i].exploding) continue;
         float bdx = blackHoles[i].x - px, bdy = blackHoles[i].y - py;
@@ -1273,6 +1276,7 @@ static void updatePlayer(GameLib &g, float dt) {
     }
 
     // Thrust particles: emit ~1 every 2 frames from rear when moving
+    // Cyan/white colors chosen to avoid confusion with yellow Weaver enemies
     thrustParticleTimer += dt;
     if (isMoving && !respawnInvincible && thrustParticleTimer >= 0.06f) {
         thrustParticleTimer = 0;
@@ -1372,6 +1376,9 @@ static void updateCollisions(GameLib &g) {
                     spawnFloatText(enemies[j].x, enemies[j].y - 10, buf, COLOR_YELLOW);
 
                     int baseDrop[] = { 7, 10, 12, 17, 10 };
+                    // Energy drop rate: base varies by enemy type (7/10/12/17/10%)
+                    // Scales down when many enemies active to avoid powerup flood
+                    // Halved if energy already nearby to prevent stacking
                     int activeEnemies = 0;
                     for (int k = 0; k < MAX_ENEMIES; k++) if (enemies[k].active) activeEnemies++;
                     float dropScale = 1.0f;
@@ -1400,6 +1407,7 @@ static void updateCollisions(GameLib &g) {
                     if (totalKills == 100 && !kills100Shown) { kills100Shown = true; showPopup("100 KILLS!", COLOR_ARGB(255, 80, 255, 80), 3); shake(5, 12); }
                     if (totalKills == 200 && !kills200Shown) { kills200Shown = true; showPopup("200 KILLS!", COLOR_ARGB(255, 160, 60, 220), 3); shake(7, 15); }
 
+                    // Orbiter splits into 3 Swarm — high-score reward (300pts) comes with crowd penalty
                     if (enemies[j].type == 3) {
                         for (int k = 0; k < 3; k++) {
                             float a = (float)(k * 120) * (float)M_PI / 180.0f;
@@ -1611,13 +1619,15 @@ static void updateSpawner(GameLib &g, float dt) {
         if (jackCount >= jackTotal) {
             jackActive = false;
         }
-        if (jackActive) return; // Pause normal spawning during Jack
+        if (jackActive) return; // Pause normal spawning during Jack — avoid double pressure
     }
 
-    // -- Normal spawning (continuous difficulty) --
+    // -- Normal spawning (continuous difficulty, no cap) --
+    // spawnInterval decreases linearly: 0.35s at start → 0.10s floor, never stops increasing
     float spawnInterval = 0.35f - gameTime * 0.001f;
     if (spawnInterval < 0.10f) spawnInterval = 0.10f;
 
+    // maxOnScreen grows by 1 every 10s, capped at 60 to keep performance safe
     int maxOnScreen = 15 + (int)(gameTime / 10);
     if (maxOnScreen > 60) maxOnScreen = 60;
 
@@ -1766,7 +1776,7 @@ int main() {
 
     while (!game.IsClosed()) {
         double dt = game.GetDeltaTime();
-        if (dt > 0.05) dt = 0.05;
+        if (dt > 0.05) dt = 0.05; // clamp to prevent physics explosion at very low FPS
         float fdt = (float)dt;
 
         if (game.IsKeyPressed(KEY_ESCAPE)) break;
