@@ -203,7 +203,7 @@ static void gameUpdate(GameLib &g, float dt) {
 | Shield | `abilityType==2, shieldActive` | 3 亮点沿半径 50px 环旋转（`shieldAngle += 4π*dt`，2圈/秒），碰敌人=消灭+计分 |
 | Slow Field | `abilityType==3, slowActive` | 敌人距玩家 <180px 时移动速度降至 30%（`undo 70% of movement`） |
 
-激活时统一用 `energyTimer` 计时（5s），到期全部重置。重生时重置。掉落随机选能力（`rand()%4`），已有激活能力时掉落概率减半。
+激活时统一用 `energyTimer` 计时（5s），到期全部重置。重生时重置。掉落随机选能力（`rand()%4`）。**碰到即替换**：拾取新能力立即替换当前能力，不做拒绝或续杯。概率不减半。
 
 ## 10. 渲染顺序
 

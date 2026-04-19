@@ -1459,7 +1459,6 @@ static void updateCollisions(GameLib &g) {
                     int baseDrop[] = { 7, 10, 12, 17, 10 };
                     // Energy drop rate: base varies by enemy type (7/10/12/17/10%)
                     // Scales down when many enemies active to avoid powerup flood
-                    // Halved if energy already nearby to prevent stacking
                     int activeEnemies = 0;
                     for (int k = 0; k < MAX_ENEMIES; k++) if (enemies[k].active) activeEnemies++;
                     float dropScale = 1.0f;
@@ -1468,20 +1467,8 @@ static void updateCollisions(GameLib &g) {
                         if (dropScale < 0.3f) dropScale = 0.3f;
                     }
                     int dropPct = (int)(baseDrop[enemies[j].type] * dropScale);
-                    if (dropPct > 0) {
-                        bool nearAbility = false;
-                        for (int k = 0; k < MAX_POWERUPS; k++) {
-                            if (powerups[k].active && powerups[k].type == 1 &&
-                                dist(enemies[j].x, enemies[j].y, powerups[k].x, powerups[k].y) < 100.0f) {
-                                nearAbility = true; break;
-                            }
-                        }
-                        // Also don't drop if player already has an active ability
-                        if (energyActive) nearAbility = true;
-                        if (nearAbility) dropPct /= 2;
-                        if (rand() % 100 < dropPct) {
-                            spawnPowerUp(enemies[j].x, enemies[j].y, 1, rand() % 4);
-                        }
+                    if (dropPct > 0 && rand() % 100 < dropPct) {
+                        spawnPowerUp(enemies[j].x, enemies[j].y, 1, rand() % 4);
                     }
 
                     if (combo >= 5 && !combo5Shown) { combo5Shown = true; showPopup("x5 COMBO!", COLOR_YELLOW, 3); shake(4, 10); }
