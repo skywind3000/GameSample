@@ -497,6 +497,7 @@ inline GameSound::WavData* GameSound::ConvertToTargetFormat(WavData* src) {
 
     // Step 2: Resample (linear interpolation)
     double ratio = (double)target_rate / src->sample_rate;
+    double step = (double)src->sample_rate / target_rate;
     uint32_t new_samples_per_ch = (uint32_t)(samples_per_channel * ratio);
     uint32_t new_total_samples = new_samples_per_ch * src->channels;
 
@@ -505,14 +506,15 @@ inline GameSound::WavData* GameSound::ConvertToTargetFormat(WavData* src) {
         double src_index = 0;
         for (uint32_t i = 0; i < new_samples_per_ch; i++) {
             uint32_t idx = (uint32_t)src_index;
+            if (idx >= samples_per_channel) idx = samples_per_channel - 1;
             double frac = src_index - idx;
 
             int16_t s0 = decoded[idx * src->channels + ch];
-            int16_t s1 = (idx + 1 < samples_per_channel) ? 
+            int16_t s1 = (idx + 1 < samples_per_channel) ?
                          decoded[(idx + 1) * src->channels + ch] : s0;
 
             resampled[i * src->channels + ch] = (int16_t)(s0 * (1.0 - frac) + s1 * frac);
-            src_index += ratio;
+            src_index += step;
         }
     }
     delete[] decoded;
