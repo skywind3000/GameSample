@@ -849,11 +849,11 @@ void DrawNumber(int x, int y, int number, uint32_t color);
 
 ### DrawTextScale
 
-放大版文字绘制，每个字体像素变为 `scale × scale` 矩形。
+缩放版文字绘制，每个字符按指定宽高渲染。
 
 **函数声明**
 ```cpp
-void DrawTextScale(int x, int y, const char *text, uint32_t color, int scale);
+void DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h);
 ```
 
 **参数**
@@ -864,14 +864,17 @@ void DrawTextScale(int x, int y, const char *text, uint32_t color, int scale);
 | `y` | `int` | 文字左上角 Y 坐标 |
 | `text` | `const char *` | 文字内容，ASCII 32~126 |
 | `color` | `uint32_t` | 颜色，ARGB 格式 |
-| `scale` | `int` | 放大倍数 |
+| `w` | `int` | 每个字符的渲染宽度（像素） |
+| `h` | `int` | 每个字符的渲染高度（像素） |
 
 **返回值**
 无
 
 **备注**
 
-支持 `\n` 换行（行间距 `(8 + 2) * scale`）。
+- 内置 8×8 位图字体通过定点采样映射到 `w × h` 区域，`w` 和 `h` 可以不同，实现非等比缩放。
+- 旧版 `scale` 参数的效果等价于 `w = 8 × scale, h = 8 × scale`。
+- 支持 `\n` 换行（行间距 `h + h / 4`）。
 
 ---
 
@@ -905,11 +908,11 @@ void DrawPrintf(int x, int y, uint32_t color, const char *fmt, ...);
 
 ### DrawPrintfScale
 
-放大版格式化输出。
+缩放版格式化输出。
 
 **函数声明**
 ```cpp
-void DrawPrintfScale(int x, int y, uint32_t color, int scale, const char *fmt, ...);
+void DrawPrintfScale(int x, int y, uint32_t color, int w, int h, const char *fmt, ...);
 ```
 
 **参数**
@@ -919,7 +922,8 @@ void DrawPrintfScale(int x, int y, uint32_t color, int scale, const char *fmt, .
 | `x` | `int` | 文字左上角 X 坐标 |
 | `y` | `int` | 文字左上角 Y 坐标 |
 | `color` | `uint32_t` | 颜色，ARGB 格式 |
-| `scale` | `int` | 放大倍数 |
+| `w` | `int` | 每个字符的渲染宽度（像素） |
+| `h` | `int` | 每个字符的渲染高度（像素） |
 | `fmt` | `const char *` | 格式字符串 |
 | `...` | 可变参数 | 格式参数 |
 
@@ -928,7 +932,7 @@ void DrawPrintfScale(int x, int y, uint32_t color, int scale, const char *fmt, .
 
 **备注**
 
-格式化后调用 `DrawTextScale` 绘制，适合放大显示分数、标题等。
+格式化后调用 `DrawTextScale` 绘制，适合缩放显示分数、标题等。
 
 ---
 

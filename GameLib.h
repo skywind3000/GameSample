@@ -61,7 +61,7 @@
 // Version Info
 #define GAMELIB_VERSION_MAJOR     1
 #define GAMELIB_VERSION_MINOR     9
-#define GAMELIB_VERSION_PATCH     1
+#define GAMELIB_VERSION_PATCH     2
 
 
 //---------------------------------------------------------------------
@@ -347,9 +347,9 @@ public:
     // -------- Text Rendering (built-in 8x8 font) --------
     void DrawText(int x, int y, const char *text, uint32_t color);
     void DrawNumber(int x, int y, int number, uint32_t color);
-    void DrawTextScale(int x, int y, const char *text, uint32_t color, int scale);
+    void DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h);
     void DrawPrintf(int x, int y, uint32_t color, const char *fmt, ...);
-    void DrawPrintfScale(int x, int y, uint32_t color, int scale, const char *fmt, ...);
+    void DrawPrintfScale(int x, int y, uint32_t color, int w, int h, const char *fmt, ...);
 
     // -------- Font Text Rendering (scalable fonts, Unicode support) --------
     void DrawTextFont(int x, int y, const char *text, uint32_t color, const char *fontName, int fontSize);
@@ -2786,28 +2786,30 @@ void GameLib::DrawNumber(int x, int y, int number, uint32_t color)
     DrawText(x, y, buf, color);
 }
 
-void GameLib::DrawTextScale(int x, int y, const char *text, uint32_t color, int scale)
+void GameLib::DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h)
 {
-    if (!text || scale <= 0) return;
+    if (!text || w <= 0 || h <= 0) return;
     int ox = x;
     for (const char *p = text; *p; p++) {
         unsigned char ch = (unsigned char)*p;
         if (ch == '\n') {
             x = ox;
-            y += (8 + 2) * scale;
+            y += h + h / 4;
             continue;
         }
         if (ch < 32 || ch > 126) continue;
         const unsigned char *glyph = _gamelib_font8x8[ch - 32];
-        for (int row = 0; row < 8; row++) {
-            unsigned char bits = glyph[row];
-            for (int col = 0; col < 8; col++) {
-                if (bits & (0x80 >> col)) {
-                    FillRect(x + col * scale, y + row * scale, scale, scale, color);
+        for (int row = 0; row < h; row++) {
+            int srcRow = row * 8 / h;
+            unsigned char bits = glyph[srcRow];
+            for (int col = 0; col < w; col++) {
+                int srcCol = col * 8 / w;
+                if (bits & (0x80 >> srcCol)) {
+                    SetPixel(x + col, y + row, color);
                 }
             }
         }
-        x += 8 * scale;
+        x += w;
     }
 }
 
@@ -2822,7 +2824,7 @@ void GameLib::DrawPrintf(int x, int y, uint32_t color, const char *fmt, ...)
     DrawText(x, y, buf, color);
 }
 
-void GameLib::DrawPrintfScale(int x, int y, uint32_t color, int scale, const char *fmt, ...)
+void GameLib::DrawPrintfScale(int x, int y, uint32_t color, int w, int h, const char *fmt, ...)
 {
     char buf[1024];
     va_list args;
@@ -2830,7 +2832,7 @@ void GameLib::DrawPrintfScale(int x, int y, uint32_t color, int scale, const cha
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     buf[sizeof(buf) - 1] = '\0';
-    DrawTextScale(x, y, buf, color, scale);
+    DrawTextScale(x, y, buf, color, w, h);
 }
 
 

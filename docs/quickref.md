@@ -54,9 +54,9 @@
 | ----------------------------------------- | ---------- |
 | `DrawText(x, y, text, color)`             | 绘制文字   |
 | `DrawNumber(x, y, number, color)`         | 绘制整数   |
-| `DrawTextScale(x, y, text, color, scale)` | 放大文字   |
+| `DrawTextScale(x, y, text, color, w, h)` | 缩放文字（每字符 w×h 像素） |
 | `DrawPrintf(x, y, color, fmt, ...)`       | 格式化输出 |
-| `DrawPrintfScale(x, y, color, scale, fmt, ...)` | 放大格式化输出 |
+| `DrawPrintfScale(x, y, color, w, h, fmt, ...)` | 缩放格式化输出 |
 | `DrawTextFont(x, y, text, color, fontSize)`   | 用默认字体绘制文字 |
 | `DrawTextFont(x, y, text, color, fontName, fontSize)` | 用指定字体绘制文字 |
 | `DrawPrintfFont(x, y, color, fontSize, fmt, ...)` | 用默认字体格式化输出 |
