@@ -34,6 +34,8 @@
 #define MAX_BULLETS      150
 #define MAX_ENEMIES      100
 #define MAX_PARTICLES    800
+#define MAX_FLOAT_TEXTS  30       // floating score texts
+#define MAX_POWERUPS     5        // max powerups on screen
 
 #define PLAYER_SPEED  250.0f
 #define BULLET_SPEED  810.0f
@@ -47,6 +49,8 @@ struct GridPt  { float x, y, vx, vy; };
 struct Bullet  { float x, y, vx, vy; bool active; };
 struct Enemy   { float x, y, vx, vy; int type; int hp; int maxHp; float r; float speed; bool active; float angle; };
 struct Particle{ float x, y, vx, vy; uint32_t color; float life; float maxLife; float sz; };
+struct FloatText { float x, y, vy; char text[16]; uint32_t color; float life; float maxLife; };
+struct PowerUp { float x, y, r; float life; float pulse; bool active; int type; }; // type 0 = nuke
 
 // ============================================================
 // Global State
@@ -58,6 +62,8 @@ static float camX = 0, camY = 0;
 static Bullet bullets[MAX_BULLETS];
 static Enemy enemies[MAX_ENEMIES];
 static Particle particles[MAX_PARTICLES];
+static FloatText floatTexts[MAX_FLOAT_TEXTS];
+static PowerUp powerups[MAX_POWERUPS];
 
 // Scene IDs (managed by GameLib.h SetScene)
 #define SCENE_TITLE     1
@@ -76,6 +82,7 @@ static float shakeAmt = 0.0f, shakeX = 0.0f, shakeY = 0.0f;
 static int shakeFrames = 0;
 static float shootTimer = 0.0f;
 static float spawnTimer = 0.0f;  // Enemy spawn timer
+static float powerupSpawnTimer = 0.0f;  // Powerup spawn timer
 
 static struct {
     const char *shoot[4];    // shoot-01.wav ~ shoot-04.wav
@@ -104,6 +111,100 @@ static const char *pathOf(const char *a, const char *b) {
     FILE *f = fopen(a, "rb"); if (f) { fclose(f); return a; }
     f = fopen(b, "rb"); if (f) { fclose(f); return b; }
     return a;
+}
+
+// ============================================================
+// Floating Score Texts
+// ============================================================
+static void spawnFloatText(float x, float y, const char *text, uint32_t color) {
+    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) {
+        if (floatTexts[i].life <= 0) {
+            FloatText &ft = floatTexts[i];
+            ft.x = x; ft.y = y;
+            ft.vy = -60.0f; // float upward
+            strncpy(ft.text, text, sizeof(ft.text) - 1);
+            ft.text[sizeof(ft.text) - 1] = '\0';
+            ft.color = color;
+            ft.life = ft.maxLife = 1.0f;
+            return;
+        }
+    }
+}
+
+static void floatTextsUpdate(float dt) {
+    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) {
+        if (floatTexts[i].life > 0) {
+            floatTexts[i].life -= dt;
+            floatTexts[i].y += floatTexts[i].vy * dt;
+            if (floatTexts[i].life < 0) floatTexts[i].life = 0;
+        }
+    }
+}
+
+static void floatTextsDraw(GameLib &g) {
+    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) {
+        if (floatTexts[i].life > 0) {
+            FloatText &ft = floatTexts[i];
+            float alpha = ft.life / ft.maxLife;
+            int sx = (int)(ft.x - camX + shakeX);
+            int sy = (int)(ft.y - camY + shakeY);
+            uint32_t c = COLOR_ARGB((uint32_t)(alpha * 255), COLOR_GET_R(ft.color), COLOR_GET_G(ft.color), COLOR_GET_B(ft.color));
+            g.DrawTextScale(sx, sy, ft.text, c, 1.2f);
+        }
+    }
+}
+
+// ============================================================
+// PowerUps
+// ============================================================
+static void spawnPowerUp(float x, float y, int type) {
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        if (!powerups[i].active) {
+            PowerUp &p = powerups[i];
+            p.x = x; p.y = y; p.r = 15; p.life = 8.0f; p.pulse = 0; p.active = true; p.type = type;
+            return;
+        }
+    }
+}
+
+static void powerupsUpdate(float dt) {
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        if (!powerups[i].active) continue;
+        PowerUp &p = powerups[i];
+        p.life -= dt;
+        p.pulse += dt * 5.0f;
+        if (p.life <= 0) { p.active = false; }
+    }
+}
+
+static void powerupsDraw(GameLib &g) {
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        if (!powerups[i].active) continue;
+        PowerUp &p = powerups[i];
+        int sx = (int)(p.x - camX + shakeX);
+        int sy = (int)(p.y - camY + shakeY);
+        float pulseScale = (float)sin(p.pulse) * 0.2f + 1.0f;
+        int pr = (int)(p.r * pulseScale);
+
+        // Nuke powerup: bright cyan diamond with glow
+        uint32_t core = COLOR_ARGB(255, 0, 255, 255);
+        uint32_t glow = COLOR_ARGB(80, 0, 200, 255);
+        g.FillCircle(sx, sy, pr * 2, glow);
+        // Diamond shape
+        int pts[8] = {
+            sx, sy - pr,
+            sx + pr, sy,
+            sx, sy + pr,
+            sx - pr, sy
+        };
+        g.FillTriangle(pts[0], pts[1], pts[2], pts[3], pts[4], pts[5], core);
+        g.FillTriangle(pts[2], pts[3], pts[4], pts[5], pts[6], pts[7], core);
+
+        // Blinking when about to expire
+        if (p.life < 3.0f && (int)(p.pulse * 2) % 2 == 0) {
+            g.FillCircle(sx, sy, pr * 2, COLOR_ARGB(40, 255, 255, 255));
+        }
+    }
 }
 
 // ============================================================
@@ -365,6 +466,29 @@ static void shakeUpdate() {
     }
 }
 
+// Trigger nuke: kill all enemies with explosion
+static void triggerNuke(GameLib &g) {
+    g.PlayWAV(pickRandom(sounds.explosion, 8));
+    shake(8, 20);
+    gridImpulse(px, py, 600, 400);
+
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        if (!enemies[i].active) continue;
+        Enemy &e = enemies[i];
+        int pts[4] = { 50, 100, 150, 300 };
+        int earned = pts[e.type];
+        score += earned;
+        kills++; totalKills++;
+        spawnExplosion(e.x, e.y, enemyColor(e.type), 20 + e.type * 8);
+        char buf[16];
+        sprintf(buf, "+%d", earned);
+        spawnFloatText(e.x, e.y - 10, buf, COLOR_YELLOW);
+        e.active = false;
+    }
+    // Big white flash
+    spawnExplosion(px, py, COLOR_ARGB(255, 255, 255, 200), 50);
+}
+
 // ============================================================
 // Camera
 // ============================================================
@@ -562,13 +686,19 @@ static void gameUpdate(GameLib &g, float dt) {
                         int pts[4] = { 50, 100, 150, 300 };
                         combo++; comboTimer = COMBO_TIMEOUT;
                         if (combo > highestCombo) highestCombo = combo;
-                        score += pts[enemies[j].type] * combo;
+                        int earned = pts[enemies[j].type] * combo;
+                        score += earned;
                         kills++; totalKills++;
                         spawnExplosion(enemies[j].x, enemies[j].y, enemyColor(enemies[j].type), 25 + enemies[j].type * 10);
                         gridImpulse(enemies[j].x, enemies[j].y, 120, 50 + enemies[j].type * 20);
                         shake(1 + enemies[j].type / 2, 3 + enemies[j].type);
                         // Play explosion sound
                         g.PlayWAV(pickRandom(sounds.explosion, 8));
+
+                        // Floating score text
+                        char buf[16];
+                        sprintf(buf, "+%d", earned);
+                        spawnFloatText(enemies[j].x, enemies[j].y - 10, buf, COLOR_YELLOW);
 
                         // Tank splits
                         if (enemies[j].type == 3) {
@@ -603,10 +733,30 @@ static void gameUpdate(GameLib &g, float dt) {
                 }
             }
         }
+
+        // Player-powerup collision
+        if (playerAlive) {
+            for (int i = 0; i < MAX_POWERUPS; i++) {
+                if (!powerups[i].active) continue;
+                if (dist(px, py, powerups[i].x, powerups[i].y) < powerups[i].r + 12) {
+                    // Pick up powerup
+                    if (powerups[i].type == 0) {
+                        triggerNuke(g);
+                    }
+                    powerups[i].active = false;
+                }
+            }
+        }
     }
 
     // Particles update
     particlesUpdate(dt);
+
+    // Floating texts update
+    floatTextsUpdate(dt);
+
+    // Powerups update
+    powerupsUpdate(dt);
 
     // Grid update
     gridUpdate(dt);
@@ -654,6 +804,18 @@ static void gameUpdate(GameLib &g, float dt) {
             spawnFromEdge(type);
             // Play spawn sound
             g.PlayWAV(pickRandom(sounds.spawn, 8));
+        }
+
+        // Spawn powerups occasionally (every 15~25 seconds)
+        powerupSpawnTimer += dt;
+        if (powerupSpawnTimer >= 15.0f + (float)(rand() % 100) / 10.0f) {
+            powerupSpawnTimer = 0;
+            // Spawn at random position away from player
+            float pux = (float)(rand() % MAP_W);
+            float puy = (float)(rand() % MAP_H);
+            if (dist(pux, puy, px, py) > 200) {
+                spawnPowerUp(pux, puy, 0); // nuke type
+            }
         }
     }
 }
@@ -743,7 +905,7 @@ int main() {
                 if (game.IsKeyPressed(KEY_ENTER)) {
                     score = 0; combo = 1; kills = 0;
                     totalKills = 0; highestCombo = 1; comboTimer = 0;
-                    gameTime = 0.0f; spawnTimer = 0.0f;
+                    gameTime = 0.0f; spawnTimer = 0.0f; powerupSpawnTimer = 0.0f;
                     px = MAP_W / 2.0f; py = MAP_H / 2.0f;
                     camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
                     playerAlive = true;
@@ -752,6 +914,8 @@ int main() {
                     for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
                     for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
                     for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
+                    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
+                    for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
                     game.SetScene(SCENE_COMBAT);
                     game.PlayWAV(sounds.noteHigh);
                 }
@@ -766,7 +930,9 @@ int main() {
                 drawBullets(game);
                 drawEnemies(game);
                 if (playerAlive) drawPlayer(game);
+                powerupsDraw(game);
                 particlesDraw(game);
+                floatTextsDraw(game);
                 drawHUD(game);
                 break;
             }
@@ -839,6 +1005,8 @@ int main() {
                         for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
                         for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
                         for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
+                        for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
+                        for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
                         playerAlive = true;
                         px = MAP_W / 2.0f; py = MAP_H / 2.0f;
                         camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
