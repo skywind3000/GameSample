@@ -77,7 +77,19 @@ static int shakeFrames = 0;
 static float shootTimer = 0.0f;
 static float spawnTimer = 0.0f;  // Enemy spawn timer
 
-static struct { const char *click, *hit, *coin, *explosion, *gameOver, *noteHigh, *victory; } sounds;
+static struct {
+    const char *shoot[4];    // shoot-01.wav ~ shoot-04.wav
+    const char *explosion[8]; // explosion-01.wav ~ explosion-08.wav
+    const char *spawn[8];    // spawn-01.wav ~ spawn-08.wav
+    const char *death;       // player death (use explosion variant)
+    const char *gameOver;    // game over screen
+    const char *noteHigh;    // start game prompt
+} sounds;
+
+// Pick a random sound from the variant array
+static const char *pickRandom(const char *variants[], int count) {
+    return variants[rand() % count];
+}
 
 // ============================================================
 // Helpers
@@ -499,6 +511,8 @@ static void gameUpdate(GameLib &g, float dt) {
                     bullets[i].y = py + (float)sin(pAngle) * 15;
                     bullets[i].vx = (float)cos(pAngle) * BULLET_SPEED;
                     bullets[i].vy = (float)sin(pAngle) * BULLET_SPEED;
+                    // Play random shoot sound
+                    g.PlayWAV(pickRandom(sounds.shoot, 4));
                     break;
                 }
             }
@@ -536,6 +550,8 @@ static void gameUpdate(GameLib &g, float dt) {
                         spawnExplosion(enemies[j].x, enemies[j].y, enemyColor(enemies[j].type), 25 + enemies[j].type * 10);
                         gridImpulse(enemies[j].x, enemies[j].y, 120, 50 + enemies[j].type * 20);
                         shake(1 + enemies[j].type / 2, 3 + enemies[j].type);
+                        // Play explosion sound
+                        g.PlayWAV(pickRandom(sounds.explosion, 8));
 
                         // Tank splits
                         if (enemies[j].type == 3) {
@@ -619,6 +635,8 @@ static void gameUpdate(GameLib &g, float dt) {
             spawnTimer = 0;
             int type = rand() % (maxType + 1);
             spawnFromEdge(type);
+            // Play spawn sound
+            g.PlayWAV(pickRandom(sounds.spawn, 8));
         }
     }
 }
@@ -631,14 +649,34 @@ int main() {
     game.Open(WIN_W, WIN_H, "Geometry Wars", true);
     game.ShowMouse(true);
 
-    // Resolve sound paths
-    sounds.click = pathOf("assets/sound/click.wav", "../assets/sound/click.wav");
-    sounds.hit = pathOf("assets/sound/hit.wav", "../assets/sound/hit.wav");
-    sounds.coin = pathOf("assets/sound/coin.wav", "../assets/sound/coin.wav");
-    sounds.explosion = pathOf("assets/sound/explosion.wav", "../assets/sound/explosion.wav");
-    sounds.gameOver = pathOf("assets/sound/game_over.wav", "../assets/sound/game_over.wav");
-    sounds.noteHigh = pathOf("assets/sound/note_do_high.wav", "../assets/sound/note_do_high.wav");
-    sounds.victory = pathOf("assets/sound/victory.wav", "../assets/sound/victory.wav");
+    // Resolve sound paths - use actual files in assets/ directory
+    sounds.shoot[0] = pathOf("assets/shoot-01.wav", "../assets/shoot-01.wav");
+    sounds.shoot[1] = pathOf("assets/shoot-02.wav", "../assets/shoot-02.wav");
+    sounds.shoot[2] = pathOf("assets/shoot-03.wav", "../assets/shoot-03.wav");
+    sounds.shoot[3] = pathOf("assets/shoot-04.wav", "../assets/shoot-04.wav");
+
+    sounds.explosion[0] = pathOf("assets/explosion-01.wav", "../assets/explosion-01.wav");
+    sounds.explosion[1] = pathOf("assets/explosion-02.wav", "../assets/explosion-02.wav");
+    sounds.explosion[2] = pathOf("assets/explosion-03.wav", "../assets/explosion-03.wav");
+    sounds.explosion[3] = pathOf("assets/explosion-04.wav", "../assets/explosion-04.wav");
+    sounds.explosion[4] = pathOf("assets/explosion-05.wav", "../assets/explosion-05.wav");
+    sounds.explosion[5] = pathOf("assets/explosion-06.wav", "../assets/explosion-06.wav");
+    sounds.explosion[6] = pathOf("assets/explosion-07.wav", "../assets/explosion-07.wav");
+    sounds.explosion[7] = pathOf("assets/explosion-08.wav", "../assets/explosion-08.wav");
+
+    sounds.spawn[0] = pathOf("assets/spawn-01.wav", "../assets/spawn-01.wav");
+    sounds.spawn[1] = pathOf("assets/spawn-02.wav", "../assets/spawn-02.wav");
+    sounds.spawn[2] = pathOf("assets/spawn-03.wav", "../assets/spawn-03.wav");
+    sounds.spawn[3] = pathOf("assets/spawn-04.wav", "../assets/spawn-04.wav");
+    sounds.spawn[4] = pathOf("assets/spawn-05.wav", "../assets/spawn-05.wav");
+    sounds.spawn[5] = pathOf("assets/spawn-06.wav", "../assets/spawn-06.wav");
+    sounds.spawn[6] = pathOf("assets/spawn-07.wav", "../assets/spawn-07.wav");
+    sounds.spawn[7] = pathOf("assets/spawn-08.wav", "../assets/spawn-08.wav");
+
+    // Use explosion variants for death and game over
+    sounds.death = sounds.explosion[0];
+    sounds.gameOver = sounds.explosion[1];
+    sounds.noteHigh = sounds.spawn[0];
 
     // Init
     game.SetScene(SCENE_TITLE);
@@ -735,7 +773,7 @@ int main() {
                 }
 
                 if (deathTimer < 1.0f && (int)(deathTimer * 2) != (int)((deathTimer - fdt) * 2)) {
-                    game.PlayWAV(sounds.explosion);
+                    game.PlayWAV(sounds.death);
                 }
 
                 if (deathTimer > 1.5f) {
