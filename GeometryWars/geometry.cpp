@@ -111,6 +111,7 @@ static float thrustParticleTimer = 0.0f;
 static int score = 0, combo = 0, kills = 0;
 static int highestCombo = 1, totalKills = 0;
 static float comboTimer = 0.0f;
+static float comboBumpTimer = 0.0f;  // combo bump animation timer
 static float gameTime = 0.0f;  // Survival time in seconds
 static float shootTimer = 0.0f;
 static float spawnTimer = 0.0f;  // Enemy spawn timer
@@ -251,7 +252,7 @@ static void spawnEnemy(int type, float x, float y);
 // ============================================================
 static void resetGame() {
     score = 0; combo = 1; kills = 0;
-    totalKills = 0; highestCombo = 1; comboTimer = 0;
+    totalKills = 0; highestCombo = 1; comboTimer = 0; comboBumpTimer = 0;
     gameTime = 0.0f; spawnTimer = 0.0f; powerupSpawnTimer = 0.0f;
     px = MAP_W / 2.0f; py = MAP_H / 2.0f;
     camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
@@ -643,7 +644,7 @@ static void blackHolesUpdate(float dt) {
                 int pts[5] = { 50, 100, 150, 300, 200 };
                 int earned = pts[e.type] * combo;
                 score += earned;
-                combo++; comboTimer = COMBO_TIMEOUT;
+                combo++; comboTimer = COMBO_TIMEOUT; comboBumpTimer = 0.3f;
                 if (combo > highestCombo) highestCombo = combo;
                 spawnExplosion(e.x, e.y, enemyColor(e.type), 8);
                 char buf[16];
@@ -1255,7 +1256,29 @@ static void drawHUD(GameLib &g) {
     g.DrawPrintfScale(WIN_W / 2 - 80, 8, COLOR_GOLD, 8, 8, "BEST: %d", bestScore);
 
     if (combo > 1) {
-        g.DrawPrintfScale(WIN_W / 2 - 30, 30, COLOR_YELLOW, 16, 16, "x%d", combo);
+        // Base size grows with combo: 16px at x2, up to 32px at x10
+        int baseSize = 16 + (combo - 2) * 2;
+        if (baseSize > 32) baseSize = 32;
+        int drawSize = baseSize;
+        // Bump animation: quick expand (first 30%), then slower settle back (remaining 70%)
+        if (comboBumpTimer > 0) {
+            float bumpProgress = comboBumpTimer / 0.3f; // 1.0 → 0.0
+            float overshoot;
+            if (bumpProgress > 0.7f) {
+                // Phase 1: quick expand — 0.3s mapped to top 30% of timer
+                float phase1 = (bumpProgress - 0.7f) / 0.3f; // 0→1
+                overshoot = phase1 * (baseSize * 0.25f);
+            } else {
+                // Phase 2: slower settle — overshoot decays back to 0
+                float phase2 = bumpProgress / 0.7f; // 0→1
+                overshoot = phase2 * (baseSize * 0.25f);
+            }
+            drawSize = baseSize + (int)overshoot;
+        }
+        int tw = drawSize; // estimate width: "x" + digits, each digit = drawSize wide
+        int digits = (combo < 10) ? 1 : (combo < 100) ? 2 : 3;
+        tw = drawSize + digits * drawSize;
+        g.DrawPrintfScale(WIN_W - tw - 10, 30, COLOR_YELLOW, drawSize, drawSize, "x%d", combo);
     }
 
     int minutes = (int)gameTime / 60;
@@ -1442,7 +1465,7 @@ static void updateCollisions(GameLib &g) {
                 enemies[j].hp--;
                 if (enemies[j].hp <= 0) {
                     int pts[5] = { 50, 100, 150, 300, 200 };
-                    combo++; comboTimer = COMBO_TIMEOUT;
+                    combo++; comboTimer = COMBO_TIMEOUT; comboBumpTimer = 0.3f;
                     if (combo > highestCombo) highestCombo = combo;
                     int earned = pts[enemies[j].type] * combo;
                     score += earned;
@@ -1546,7 +1569,7 @@ static void updateCollisions(GameLib &g) {
                 float dotY = py + (float)sin(dotAngle) * 50;
                 if (dist(dotX, dotY, enemies[i].x, enemies[i].y) < enemies[i].r + 8) {
                     int pts[5] = { 50, 100, 150, 300, 200 };
-                    combo++; comboTimer = COMBO_TIMEOUT;
+                    combo++; comboTimer = COMBO_TIMEOUT; comboBumpTimer = 0.3f;
                     if (combo > highestCombo) highestCombo = combo;
                     int earned = pts[enemies[i].type] * combo;
                     score += earned;
@@ -1668,6 +1691,7 @@ static void updateCollisions(GameLib &g) {
 
 static void updateTimers(float dt) {
     if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 1; }
+    if (comboBumpTimer > 0) { comboBumpTimer -= dt; if (comboBumpTimer < 0) comboBumpTimer = 0; }
 
     if (energyActive) {
         energyTimer -= dt;

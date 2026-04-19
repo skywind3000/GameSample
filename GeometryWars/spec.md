@@ -354,3 +354,4 @@ while (!game.IsClosed()) {
 | 2026-04-20 | 跑马灯事件通知：TickerMsg 队列（MAX_TICKER=4），滑入→保持→滑出动画，strncpy 截断保护（100字符），Jack/BH 爆炸时随机短语 + 霓虹红/深红颜色 |
 | 2026-04-20 | 文档优化：spec.md 精简去除与 design.md 重复内容（~900→160行），保留数据结构/物理公式/碰撞半径/渲染顺序/API清单等独有技术细节；geometry.cpp 补充关键意图注释（弹簧参数、dt上限、shake策略、Nuke不计连击等9处） |
 | 2026-04-20 | 能力道具多样化：Energy→Ability 系统，4种临时能力（Spread/Homing/Shield/Slow）随机掉落，每种5秒持续改变打法；Homing子弹每帧偏转3°追踪最近敌人；Shield旋转护盾环（3亮点半径50px碰敌消灭）；Slow减速场（180px内敌人速度30%）；道具颜色按能力区分；HUD能力条+名称；碰到即替换当前能力，概率不减半；重生时重置 |
+| 2026-04-20 | 同步 GameLib.h API 变更：DrawTextScale/DrawPrintfScale 参数从 (scale) 改为 (w, h)，所有调用点更新；drawTextCentered 函数签名改为 (fw, fh) |
