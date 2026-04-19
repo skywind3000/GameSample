@@ -940,7 +940,7 @@ static void gameUpdate(GameLib &g, float dt) {
                         spawnFloatText(enemies[j].x, enemies[j].y - 10, buf, COLOR_YELLOW);
 
                         // Energy drop chance
-                        int dropChance[] = { 20, 30, 35, 50 };
+                        int dropChance[] = { 7, 10, 12, 17 };
                         if (rand() % 100 < dropChance[enemies[j].type]) {
                             spawnPowerUp(enemies[j].x, enemies[j].y, 1);
                         }
