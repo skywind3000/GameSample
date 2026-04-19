@@ -960,9 +960,27 @@ static void updateCollisions(GameLib &g) {
                     sprintf(buf, "+%d", earned);
                     spawnFloatText(enemies[j].x, enemies[j].y - 10, buf, COLOR_YELLOW);
 
-                    int dropChance[] = { 7, 10, 12, 17 };
-                    if (rand() % 100 < dropChance[enemies[j].type]) {
-                        spawnPowerUp(enemies[j].x, enemies[j].y, 1);
+                    int baseDrop[] = { 7, 10, 12, 17 };
+                    int activeEnemies = 0;
+                    for (int k = 0; k < MAX_ENEMIES; k++) if (enemies[k].active) activeEnemies++;
+                    float dropScale = 1.0f;
+                    if (activeEnemies > 15) {
+                        dropScale -= (float)(activeEnemies - 15) / 50.0f;
+                        if (dropScale < 0.3f) dropScale = 0.3f;
+                    }
+                    int dropPct = (int)(baseDrop[enemies[j].type] * dropScale);
+                    if (dropPct > 0) {
+                        bool nearEnergy = false;
+                        for (int k = 0; k < MAX_POWERUPS; k++) {
+                            if (powerups[k].active && powerups[k].type == 1 &&
+                                dist(enemies[j].x, enemies[j].y, powerups[k].x, powerups[k].y) < 100.0f) {
+                                nearEnergy = true; break;
+                            }
+                        }
+                        if (nearEnergy) dropPct /= 2;
+                        if (rand() % 100 < dropPct) {
+                            spawnPowerUp(enemies[j].x, enemies[j].y, 1);
+                        }
                     }
 
                     if (combo >= 5 && !combo5Shown) { combo5Shown = true; showPopup("x5 COMBO!", COLOR_YELLOW, 3); shake(4, 10); }
@@ -1096,7 +1114,7 @@ static void updateSpawner(GameLib &g, float dt) {
     }
 
     powerupSpawnTimer += dt;
-    if (powerupSpawnTimer >= 15.0f + (float)(rand() % 100) / 10.0f) {
+    if (powerupSpawnTimer >= 14.0f + (float)(rand() % 80) / 10.0f) {
         powerupSpawnTimer = 0;
         float pux = (float)(rand() % MAP_W);
         float puy = (float)(rand() % MAP_H);
