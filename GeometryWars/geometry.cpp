@@ -493,10 +493,20 @@ static void floatTextsDraw(GameLib &g) {
     for (int i = 0; i < MAX_FLOAT_TEXTS; i++) {
         if (floatTexts[i].life > 0) {
             FloatText &ft = floatTexts[i];
-            float alpha = ft.life / ft.maxLife;
+            float elapsed = ft.maxLife - ft.life;
+            float holdTime = 0.5f;
+            float fadeTime = ft.maxLife - holdTime;
+            float alpha;
+            if (elapsed < holdTime) {
+                alpha = 1.0f;
+            } else {
+                alpha = 1.0f - (elapsed - holdTime) / fadeTime;
+                if (alpha < 0) alpha = 0;
+            }
             int sx = (int)(ft.x - camX + shakeX);
             int sy = (int)(ft.y - camY + shakeY);
             uint32_t c = COLOR_ARGB((uint32_t)(alpha * 255), COLOR_GET_R(ft.color), COLOR_GET_G(ft.color), COLOR_GET_B(ft.color));
+            g.DrawTextScale(sx + 1, sy + 1, ft.text, COLOR_ARGB((uint32_t)(alpha * 100), 255, 255, 255), 1.2f);
             g.DrawTextScale(sx, sy, ft.text, c, 1.2f);
         }
     }
@@ -621,7 +631,7 @@ static void blackHolesUpdate(float dt) {
                 spawnExplosion(e.x, e.y, enemyColor(e.type), 8);
                 char buf[16];
                 sprintf(buf, "+%d", earned);
-                spawnFloatText(e.x, e.y - 10, buf, COLOR_YELLOW);
+                spawnFloatText(e.x, e.y - 10, buf, COLOR_ARGB(255, 255, 255, 255));
                 e.active = false;
             }
         }
@@ -704,7 +714,7 @@ static void triggerNuke(GameLib &g) {
         spawnExplosion(e.x, e.y, enemyColor(e.type), 20 + e.type * 8);
         char buf[16];
         sprintf(buf, "+%d", earned);
-        spawnFloatText(e.x, e.y - 10, buf, COLOR_YELLOW);
+        spawnFloatText(e.x, e.y - 10, buf, COLOR_ARGB(255, 255, 255, 255));
         e.active = false;
     }
     spawnExplosion(px, py, COLOR_ARGB(255, 255, 255, 200), 50);
