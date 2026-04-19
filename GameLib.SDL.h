@@ -70,6 +70,7 @@
 
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 // SDL headers and extension library detection (moved here from
 // GAMELIB_SDL_IMPLEMENTATION so that the GameLib class declaration
@@ -241,6 +242,8 @@ typedef struct _Mix_Music Mix_Music;
 #define KEY_F10       0x79
 #define KEY_F11       0x7A
 #define KEY_F12       0x7B
+#define KEY_ADD       0x6E    // Numpad + (VK_ADD equivalent)
+#define KEY_SUBTRACT  0x6D    // Numpad - (VK_SUBTRACT equivalent)
 
 #define MOUSE_LEFT    0
 #define MOUSE_RIGHT   1
@@ -380,8 +383,13 @@ public:
     bool IsActive() const;
 
     void PlayBeep(int frequency, int duration);
-    bool PlayWAV(const char *filename, bool loop = false);
-    void StopWAV();
+    int PlayWAV(const char *filename, int repeat = 1, int volume = 1000);
+    int StopWAV(int channel);
+    int IsPlaying(int channel);
+    int SetVolume(int channel, int volume);
+    void StopAll();
+    int SetMasterVolume(int volume);
+    int GetMasterVolume() const;
     bool PlayMusic(const char *filename, bool loop = true);
     void StopMusic();
     bool IsMusicPlaying() const;
@@ -535,8 +543,52 @@ private:
     };
     std::vector<GameFontCacheEntry> _fontCache;
 
-    Mix_Chunk *_currentWav;
-    int _wavChannel;
+    // Multi-channel audio mixer state
+    struct _WavData {
+        uint8_t *buffer;
+        uint32_t size;
+        uint32_t sample_rate;
+        uint16_t channels;
+        uint16_t bits_per_sample;
+        int ref_count;
+        _WavData() : buffer(NULL), size(0), sample_rate(0), channels(0),
+                     bits_per_sample(0), ref_count(0) {}
+        ~_WavData() { if (buffer) delete[] buffer; }
+    };
+    struct _Channel {
+        int id;
+        _WavData *wav;
+        int volume;
+        int repeat;
+        uint32_t position;
+        bool is_playing;
+    };
+    std::unordered_map<std::string, _WavData*> _wav_cache;
+    std::unordered_map<int, _Channel*> _audio_channels;
+    int64_t _next_channel_id;
+    bool _audio_initialized;
+    int _master_volume;
+    SDL_AudioDeviceID _audioDevice;
+    SDL_AudioSpec _audioSpec;
+    bool _audioSelfInit;
+    static const int _MAX_CHANNELS = 32;
+    static const int _AUDIO_BUFFER_FRAMES = 2048;
+    static const int _AUDIO_OUTPUT_CHANNELS = 2;
+    static const int _AUDIO_BUFFER_TOTAL = _AUDIO_BUFFER_FRAMES * _AUDIO_OUTPUT_CHANNELS;
+    static const int _AUDIO_BUFFER_BYTES = _AUDIO_BUFFER_TOTAL * sizeof(int16_t);
+    int32_t _mix_buffer[_AUDIO_BUFFER_TOTAL];
+
+    bool _InitAudioBackend();
+    void _ShutdownAudioBackend();
+    static void _SDLAudioCallback(void *userdata, Uint8 *stream, int len);
+    void _MixAudio(int16_t *output, int sample_count);
+    void _ClampAndConvert(int32_t *input, int16_t *output, int count);
+    _WavData *_LoadWAVFromFile(const char *filename);
+    _WavData *_ConvertToTargetFormat(_WavData *src);
+    _WavData *_LoadOrCacheWAV(const char *filename);
+    int _AllocateChannel();
+    void _ReleaseChannel(int channel_id);
+
     Mix_Music *_currentMusic;
     bool _musicPlaying;
     int _mixerInitFlags;
@@ -917,6 +969,8 @@ static int _gamelib_sdl_map_scancode(SDL_Scancode scancode)
     case SDL_SCANCODE_F10: return KEY_F10;
     case SDL_SCANCODE_F11: return KEY_F11;
     case SDL_SCANCODE_F12: return KEY_F12;
+    case SDL_SCANCODE_KP_PLUS: return KEY_ADD;
+    case SDL_SCANCODE_KP_MINUS: return KEY_SUBTRACT;
     default: return -1;
     }
 }
@@ -964,8 +1018,11 @@ GameLib::GameLib()
     _deltaTime = 0.0;
     _fps = 0.0;
     _fpsAccum = 0.0;
-    _currentWav = NULL;
-    _wavChannel = 0;
+    _next_channel_id = 1;
+    _audio_initialized = false;
+    _master_volume = 1000;
+    _audioDevice = 0;
+    _audioSelfInit = false;
     _currentMusic = NULL;
     _musicPlaying = false;
     _mixerInitFlags = 0;
@@ -984,7 +1041,19 @@ GameLib::GameLib()
 GameLib::~GameLib()
 {
     StopMusic();
-    StopWAV();
+    _ShutdownAudioBackend();
+
+    // Clean up channels and WAV cache (audio device closed, no lock needed)
+    for (std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+         it != _audio_channels.end(); ++it) {
+        delete it->second;
+    }
+    _audio_channels.clear();
+    for (std::unordered_map<std::string, _WavData*>::iterator it = _wav_cache.begin();
+         it != _wav_cache.end(); ++it) {
+        delete it->second;
+    }
+    _wav_cache.clear();
 
     if (_sdlReady || SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_ShowCursor(SDL_ENABLE);
@@ -1134,7 +1203,6 @@ bool GameLib::_EnsureMixerReady()
     _mixerInitFlags = Mix_Init(flags);
     if (Mix_OpenAudio(44100, AUDIO_S16SYS, 2, 1024) != 0) return false;
     Mix_AllocateChannels(8);
-    _wavChannel = 0;
     _mixerReady = true;
     return true;
 #else
@@ -3663,41 +3731,62 @@ void GameLib::PlayBeep(int frequency, int duration)
     if (duration <= 0) return;
     if (frequency <= 0) frequency = 440;
 
-#if GAMELIB_SDL_HAS_MIXER
-    if (_EnsureMixerReady()) {
-        int sampleRate = 0;
-        int channels = 0;
-        Uint16 format = 0;
-        if (Mix_QuerySpec(&sampleRate, &format, &channels) != 0 &&
-            sampleRate > 0 && channels > 0 && format == AUDIO_S16SYS) {
-            std::vector<int16_t> toneData;
-            _gamelib_generate_beep_pcm(toneData, sampleRate, channels, frequency, duration);
+    // If our mixer is initialized, play beep through the software mixer
+    if (_audio_initialized && _audioDevice != 0) {
+        std::vector<int16_t> toneData;
+        _gamelib_generate_beep_pcm(toneData, 44100, 2, frequency, duration);
+        if (toneData.empty()) return;
 
-            if (!toneData.empty()) {
-                Mix_Chunk *chunk = Mix_QuickLoad_RAW((Uint8*)toneData.data(),
-                    (Uint32)(toneData.size() * sizeof(int16_t)));
-                if (chunk) {
-                    int channel = Mix_PlayChannel(1, chunk, 0);
-                    if (channel >= 0) {
-                        Uint32 timeout = SDL_GetTicks() + (Uint32)duration + 1000U;
-                        while (Mix_Playing(channel) != 0 &&
-                               !SDL_TICKS_PASSED(SDL_GetTicks(), timeout)) {
-                            SDL_Delay(1);
-                        }
-                        Mix_HaltChannel(channel);
-                        Mix_FreeChunk(chunk);
-                        return;
-                    }
-                    Mix_FreeChunk(chunk);
-                }
-            }
+        // Create temporary _WavData for the beep
+        _WavData *beepWav = new _WavData();
+        beepWav->sample_rate = 44100;
+        beepWav->channels = 2;
+        beepWav->bits_per_sample = 16;
+        beepWav->size = (uint32_t)(toneData.size() * sizeof(int16_t));
+        beepWav->buffer = new uint8_t[beepWav->size];
+        memcpy(beepWav->buffer, toneData.data(), beepWav->size);
+        beepWav->ref_count = 1;
+
+        // Allocate a temporary channel and play it
+        int ch_id = _AllocateChannel();
+        if (ch_id == 0) {
+            delete beepWav;
+            return;
         }
-    }
-#endif
+        _Channel *ch = new _Channel();
+        ch->wav = beepWav;
+        ch->volume = 1000;
+        ch->repeat = 1;
+        ch->position = 0;
+        ch->is_playing = true;
 
-    if (!_audioReady) {
+        SDL_LockAudioDevice(_audioDevice);
+        _audio_channels[ch_id] = ch;
+        SDL_UnlockAudioDevice(_audioDevice);
+
+        // Blocking wait for beep to finish (with safety timeout)
+        Uint32 timeout = SDL_GetTicks() + (Uint32)duration + 500U;
+        while (SDL_GetTicks() < timeout) {
+            SDL_LockAudioDevice(_audioDevice);
+            std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(ch_id);
+            bool stillPlaying = (it != _audio_channels.end() && it->second->is_playing);
+            SDL_UnlockAudioDevice(_audioDevice);
+            if (!stillPlaying) break;
+            SDL_Delay(1);
+        }
+
+        // Clean up the temporary channel and wav data
+        SDL_LockAudioDevice(_audioDevice);
+        _ReleaseChannel(ch_id);
+        SDL_UnlockAudioDevice(_audioDevice);
+        return;
+    }
+
+    // Fallback: open a temporary SDL audio device for the beep
+    bool audioSubInit = false;
+    if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return;
-        _audioReady = true;
+        audioSubInit = true;
     }
 
     SDL_AudioSpec want;
@@ -3713,10 +3802,14 @@ void GameLib::PlayBeep(int frequency, int duration)
     SDL_AudioDeviceID device = SDL_OpenAudioDevice(
         NULL, 0, &want, &have,
         SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
-    if (device == 0) return;
+    if (device == 0) {
+        if (audioSubInit) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return;
+    }
 
     if (have.freq <= 0 || have.channels <= 0 || have.format != AUDIO_S16SYS) {
         SDL_CloseAudioDevice(device);
+        if (audioSubInit) SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
 
@@ -3724,6 +3817,7 @@ void GameLib::PlayBeep(int frequency, int duration)
     _gamelib_generate_beep_pcm(toneData, have.freq, have.channels, frequency, duration);
     if (toneData.empty()) {
         SDL_CloseAudioDevice(device);
+        if (audioSubInit) SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
 
@@ -3740,44 +3834,7 @@ void GameLib::PlayBeep(int frequency, int duration)
     }
 
     SDL_CloseAudioDevice(device);
-}
-
-bool GameLib::PlayWAV(const char *filename, bool loop)
-{
-#if GAMELIB_SDL_HAS_MIXER
-    if (!filename) return false;
-    if (!_EnsureMixerReady()) return false;
-
-    StopWAV();
-    _currentWav = Mix_LoadWAV(filename);
-    if (!_currentWav) return false;
-
-    _wavChannel = Mix_PlayChannel(0, _currentWav, loop ? -1 : 0);
-    if (_wavChannel < 0) {
-        Mix_FreeChunk(_currentWav);
-        _currentWav = NULL;
-        return false;
-    }
-    return true;
-#else
-    (void)filename;
-    (void)loop;
-    return false;
-#endif
-}
-
-void GameLib::StopWAV()
-{
-#if GAMELIB_SDL_HAS_MIXER
-    if (_mixerReady) {
-        Mix_HaltChannel(0);
-        if (_currentWav) {
-            Mix_FreeChunk(_currentWav);
-            _currentWav = NULL;
-        }
-        _wavChannel = 0;
-    }
-#endif
+    if (audioSubInit) SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 #if GAMELIB_SDL_HAS_MIXER
@@ -4318,6 +4375,452 @@ bool GameLib::DeleteSave(const char *filename)
 {
     if (!filename) return false;
     return remove(filename) == 0;
+}
+
+
+//=====================================================================
+// Software Mixer (SDL audio callback backend)
+//=====================================================================
+
+bool GameLib::_InitAudioBackend()
+{
+    // Initialize SDL audio subsystem if not already done
+    if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return false;
+        _audioSelfInit = true;
+    }
+
+    SDL_AudioSpec desired;
+    memset(&desired, 0, sizeof(desired));
+    desired.freq = 44100;
+    desired.format = AUDIO_S16SYS;
+    desired.channels = _AUDIO_OUTPUT_CHANNELS;
+    desired.samples = _AUDIO_BUFFER_FRAMES;
+    desired.callback = _SDLAudioCallback;
+    desired.userdata = this;
+
+    _audioDevice = SDL_OpenAudioDevice(NULL, 0, &desired, &_audioSpec, 0);
+    if (_audioDevice == 0) return false;
+
+    SDL_PauseAudioDevice(_audioDevice, 0);
+    return true;
+}
+
+void GameLib::_ShutdownAudioBackend()
+{
+    if (_audioDevice != 0) {
+        SDL_CloseAudioDevice(_audioDevice);
+        _audioDevice = 0;
+    }
+    if (_audioSelfInit && SDL_WasInit(SDL_INIT_AUDIO)) {
+        // Don't quit audio subsystem here - SDL_mixer may still need it
+        // It will be quit in the destructor after SDL_mixer cleanup
+    }
+    _audio_initialized = false;
+}
+
+void GameLib::_SDLAudioCallback(void *userdata, Uint8 *stream, int len)
+{
+    GameLib *game = (GameLib*)userdata;
+    int total_samples = len / sizeof(int16_t);
+
+    // SDL may request more samples than _mix_buffer can hold, so mix in chunks
+    int16_t *out = (int16_t*)stream;
+    int offset = 0;
+    int chunk_samples = _AUDIO_BUFFER_TOTAL;
+    while (offset < total_samples) {
+        int to_mix = chunk_samples;
+        if (offset + to_mix > total_samples) {
+            to_mix = total_samples - offset;
+        }
+        game->_MixAudio(out + offset, to_mix);
+        offset += to_mix;
+    }
+}
+
+void GameLib::_ClampAndConvert(int32_t *input, int16_t *output, int count)
+{
+    for (int i = 0; i < count; i++) {
+        int32_t sample = input[i];
+        if (sample > 32767) sample = 32767;
+        else if (sample < -32768) sample = -32768;
+        output[i] = (int16_t)sample;
+    }
+}
+
+void GameLib::_MixAudio(int16_t *output_buffer, int sample_count)
+{
+    for (int i = 0; i < sample_count; i++) {
+        _mix_buffer[i] = 0;
+    }
+
+    // No lock needed inside callback - SDL_LockAudioDevice guarantees safety
+    // Public APIs lock before modifying _audio_channels
+
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+    while (it != _audio_channels.end()) {
+        _Channel *ch = it->second;
+        if (!ch->is_playing) {
+            ++it;
+            continue;
+        }
+
+        float vol = (ch->volume / 1000.0f) * (_master_volume / 1000.0f);
+        int bytes_per_sample = ch->wav->bits_per_sample / 8;
+        int bytes_per_frame = bytes_per_sample * ch->wav->channels;
+        int frames_to_mix = sample_count / ch->wav->channels;
+
+        uint32_t remaining_bytes = ch->wav->size - ch->position;
+        uint32_t remaining_frames = remaining_bytes / bytes_per_frame;
+
+        if (remaining_frames == 0) {
+            frames_to_mix = 0;
+        } else if ((uint32_t)frames_to_mix > remaining_frames) {
+            frames_to_mix = (int)remaining_frames;
+        }
+
+        for (int frame = 0; frame < frames_to_mix; frame++) {
+            uint32_t frame_start = ch->position + frame * bytes_per_frame;
+            for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
+                uint32_t sample_pos = frame_start + ch_idx * bytes_per_sample;
+                int16_t sample = 0;
+                if (sample_pos + 1 < ch->wav->size) {
+                    sample = (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[sample_pos] |
+                                       ((uint16_t)(uint8_t)ch->wav->buffer[sample_pos + 1] << 8));
+                }
+                int out_idx = frame * ch->wav->channels + ch_idx;
+                _mix_buffer[out_idx] += (int32_t)(sample * vol);
+            }
+        }
+        ch->position += frames_to_mix * bytes_per_frame;
+
+        if (ch->position >= ch->wav->size) {
+            if (ch->repeat == 0) {
+                ch->position = 0;
+            } else if (ch->repeat > 1) {
+                ch->position = 0;
+                ch->repeat--;
+            } else {
+                if (ch->wav) ch->wav->ref_count--;
+                delete ch;
+                it = _audio_channels.erase(it);
+                continue;
+            }
+        }
+        ++it;
+    }
+
+    _ClampAndConvert(_mix_buffer, output_buffer, sample_count);
+}
+
+GameLib::_WavData *GameLib::_LoadWAVFromFile(const char *filename)
+{
+    FILE *f = fopen(filename, "rb");
+    if (!f) return NULL;
+
+    char header[44];
+    if (fread(header, 1, 44, f) != 44) {
+        fclose(f);
+        return NULL;
+    }
+
+    if (header[0] != 'R' || header[1] != 'I' || header[2] != 'F' || header[3] != 'F') {
+        fclose(f);
+        return NULL;
+    }
+    if (header[8] != 'W' || header[9] != 'A' || header[10] != 'V' || header[11] != 'E') {
+        fclose(f);
+        return NULL;
+    }
+
+    uint16_t audio_format = (uint16_t)(header[20] | (header[21] << 8));
+    if (audio_format != 1) {
+        fclose(f);
+        return NULL;
+    }
+
+    _WavData *wav = new _WavData();
+    wav->channels = (uint16_t)((uint8_t)header[22] | ((uint8_t)header[23] << 8));
+    wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) |
+                                   ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
+    wav->bits_per_sample = (uint16_t)((uint8_t)header[34] | ((uint8_t)header[35] << 8));
+
+    if (wav->channels == 0 || wav->channels > 2) {
+        delete wav; fclose(f); return NULL;
+    }
+    if (wav->sample_rate == 0) {
+        delete wav; fclose(f); return NULL;
+    }
+    if (wav->bits_per_sample != 8 && wav->bits_per_sample != 16) {
+        delete wav; fclose(f); return NULL;
+    }
+
+    // Find data chunk
+    fseek(f, 12, SEEK_SET);
+    bool found_data = false;
+    while (!found_data) {
+        char chunk_id[4];
+        uint32_t chunk_size = 0;
+        if (fread(chunk_id, 1, 4, f) != 4) break;
+        if (fread(&chunk_size, 4, 1, f) != 1) break;
+        if (chunk_id[0] == 'd' && chunk_id[1] == 'a' &&
+            chunk_id[2] == 't' && chunk_id[3] == 'a') {
+            found_data = true;
+            wav->size = chunk_size;
+        } else {
+            uint32_t skip = chunk_size + (chunk_size % 2);
+            fseek(f, skip, SEEK_CUR);
+        }
+    }
+
+    if (!found_data || wav->size == 0 || wav->size > 100 * 1024 * 1024) {
+        delete wav;
+        fclose(f);
+        return NULL;
+    }
+
+    wav->buffer = new uint8_t[wav->size];
+    if (fread(wav->buffer, 1, wav->size, f) != wav->size) {
+        delete wav;
+        fclose(f);
+        return NULL;
+    }
+
+    fclose(f);
+
+    _WavData *converted = _ConvertToTargetFormat(wav);
+    delete wav;
+    return converted;
+}
+
+GameLib::_WavData *GameLib::_ConvertToTargetFormat(_WavData *src)
+{
+    if (!src || !src->buffer || src->size == 0 ||
+        src->sample_rate == 0 || src->channels == 0) {
+        return NULL;
+    }
+
+    const uint32_t target_rate = 44100;
+    const uint16_t target_channels = 2;
+    const uint16_t target_bps = 16;
+
+    uint32_t bytes_per_sample = src->bits_per_sample / 8;
+    uint32_t total_samples = src->size / bytes_per_sample;
+    uint32_t samples_per_channel = total_samples / src->channels;
+
+    // Step 1: Decode to 16-bit array
+    int16_t *decoded = new int16_t[total_samples];
+    for (uint32_t i = 0; i < total_samples; i++) {
+        if (src->bits_per_sample == 16) {
+            decoded[i] = (int16_t)((uint16_t)(uint8_t)src->buffer[i * 2] |
+                                    ((uint16_t)(uint8_t)src->buffer[i * 2 + 1] << 8));
+        } else if (src->bits_per_sample == 8) {
+            decoded[i] = (int16_t)((src->buffer[i] - 128) << 8);
+        }
+    }
+
+    // Step 2: Resample (linear interpolation)
+    double ratio = (double)target_rate / src->sample_rate;
+    double step = (double)src->sample_rate / target_rate;
+    uint32_t new_samples_per_ch = (uint32_t)(samples_per_channel * ratio);
+    uint32_t new_total_samples = new_samples_per_ch * src->channels;
+
+    int16_t *resampled = new int16_t[new_total_samples];
+    for (uint16_t ch = 0; ch < src->channels; ch++) {
+        double src_index = 0;
+        for (uint32_t i = 0; i < new_samples_per_ch; i++) {
+            uint32_t idx = (uint32_t)src_index;
+            if (idx >= samples_per_channel) idx = samples_per_channel - 1;
+            double frac = src_index - idx;
+
+            int16_t s0 = decoded[idx * src->channels + ch];
+            int16_t s1 = (idx + 1 < samples_per_channel) ?
+                         decoded[(idx + 1) * src->channels + ch] : s0;
+
+            resampled[i * src->channels + ch] = (int16_t)(s0 * (1.0 - frac) + s1 * frac);
+            src_index += step;
+        }
+    }
+    delete[] decoded;
+
+    // Step 3: Convert mono to stereo
+    int16_t *stereo = NULL;
+    uint32_t stereo_samples = 0;
+
+    if (src->channels == 1) {
+        stereo_samples = new_samples_per_ch * 2;
+        stereo = new int16_t[stereo_samples];
+        for (uint32_t i = 0; i < new_samples_per_ch; i++) {
+            stereo[i * 2] = resampled[i];
+            stereo[i * 2 + 1] = resampled[i];
+        }
+        delete[] resampled;
+    } else {
+        stereo = resampled;
+        stereo_samples = new_total_samples;
+    }
+
+    // Step 4: Create new WavData
+    _WavData *dst = new _WavData();
+    dst->sample_rate = target_rate;
+    dst->channels = target_channels;
+    dst->bits_per_sample = target_bps;
+    dst->size = stereo_samples * sizeof(int16_t);
+    dst->buffer = new uint8_t[dst->size];
+    memcpy(dst->buffer, stereo, dst->size);
+
+    delete[] stereo;
+    return dst;
+}
+
+GameLib::_WavData *GameLib::_LoadOrCacheWAV(const char *filename)
+{
+    std::string key(filename);
+    std::unordered_map<std::string, _WavData*>::iterator it = _wav_cache.find(key);
+    if (it != _wav_cache.end()) {
+        it->second->ref_count++;
+        return it->second;
+    }
+
+    _WavData *wav = _LoadWAVFromFile(filename);
+    if (wav) {
+        wav->ref_count = 1;
+        _wav_cache[key] = wav;
+    }
+    return wav;
+}
+
+int GameLib::_AllocateChannel()
+{
+    if ((int)_audio_channels.size() >= _MAX_CHANNELS) {
+        return 0;
+    }
+    if (_next_channel_id > 32700) {
+        _next_channel_id = 1;
+    }
+    while (_audio_channels.count((int)_next_channel_id)) {
+        _next_channel_id++;
+        if (_next_channel_id > 32700) {
+            _next_channel_id = 1;
+        }
+    }
+    int id = (int)_next_channel_id;
+    _next_channel_id++;
+    return id;
+}
+
+void GameLib::_ReleaseChannel(int channel_id)
+{
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel_id);
+    if (it != _audio_channels.end()) {
+        if (it->second->wav) {
+            it->second->wav->ref_count--;
+        }
+        delete it->second;
+        _audio_channels.erase(it);
+    }
+}
+
+
+//=====================================================================
+// Public Audio API
+//=====================================================================
+
+int GameLib::PlayWAV(const char *filename, int repeat, int volume)
+{
+    if (!filename) return -1;
+    if (!_audio_initialized) {
+        _audio_initialized = _InitAudioBackend();
+        if (!_audio_initialized) return -2;
+    }
+
+    _WavData *wav = _LoadOrCacheWAV(filename);
+    if (!wav) return -1;
+
+    int ch_id = _AllocateChannel();
+    if (ch_id == 0) return -4;
+
+    _Channel *ch = new _Channel();
+    ch->id = ch_id;
+    ch->wav = wav;
+    ch->position = 0;
+    ch->repeat = repeat;
+    ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    ch->is_playing = true;
+
+    SDL_LockAudioDevice(_audioDevice);
+    _audio_channels[ch_id] = ch;
+    SDL_UnlockAudioDevice(_audioDevice);
+
+    return ch_id;
+}
+
+int GameLib::StopWAV(int channel)
+{
+    if (_audioDevice == 0) return 0;
+    SDL_LockAudioDevice(_audioDevice);
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    if (it == _audio_channels.end()) {
+        SDL_UnlockAudioDevice(_audioDevice);
+        return 0;
+    }
+    _ReleaseChannel(channel);
+    SDL_UnlockAudioDevice(_audioDevice);
+    return 1;
+}
+
+int GameLib::IsPlaying(int channel)
+{
+    if (_audioDevice == 0) return 0;
+    SDL_LockAudioDevice(_audioDevice);
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    int result = 0;
+    if (it != _audio_channels.end()) {
+        result = it->second->is_playing ? 1 : 0;
+    }
+    SDL_UnlockAudioDevice(_audioDevice);
+    return result;
+}
+
+int GameLib::SetVolume(int channel, int volume)
+{
+    if (_audioDevice == 0) return -1;
+    SDL_LockAudioDevice(_audioDevice);
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    int result = -1;
+    if (it != _audio_channels.end()) {
+        it->second->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+        result = it->second->volume;
+    }
+    SDL_UnlockAudioDevice(_audioDevice);
+    return result;
+}
+
+void GameLib::StopAll()
+{
+    if (_audioDevice == 0) return;
+    SDL_LockAudioDevice(_audioDevice);
+    std::vector<int> channel_ids;
+    for (std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+         it != _audio_channels.end(); ++it) {
+        channel_ids.push_back(it->first);
+    }
+    for (size_t i = 0; i < channel_ids.size(); i++) {
+        _ReleaseChannel(channel_ids[i]);
+    }
+    _audio_channels.clear();
+    SDL_UnlockAudioDevice(_audioDevice);
+}
+
+int GameLib::SetMasterVolume(int volume)
+{
+    _master_volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    return _master_volume;
+}
+
+int GameLib::GetMasterVolume() const
+{
+    return _master_volume;
 }
 
 

@@ -72,6 +72,7 @@
 #endif
 
 #include <windows.h>
+#include <mmsystem.h>
 
 #include <stdint.h>
 #include <limits.h>
@@ -84,39 +85,15 @@
 
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 
 //---------------------------------------------------------------------
-// Link library: only needs -mwindows, gdi32 and winmm are loaded 
+// Link library: only needs -mwindows, gdi32 and winmm are loaded
 // via LoadLibrary
 //---------------------------------------------------------------------
 #ifdef _MSC_VER
 #pragma comment(lib, "user32.lib")
-#endif
-
-
-//---------------------------------------------------------------------
-// mmsystem types and constants (no need to #include <mmsystem.h>)
-//---------------------------------------------------------------------
-#ifndef SND_ASYNC
-#define SND_ASYNC       0x0001
-#define SND_LOOP        0x0008
-#define SND_FILENAME    0x00020000
-#endif
-
-#ifndef MCIERR_BASE
-typedef DWORD MCIERROR;
-#endif
-
-#ifndef MM_MCINOTIFY
-#define MM_MCINOTIFY           0x03B9
-#endif
-
-#ifndef MCI_NOTIFY_SUCCESSFUL
-#define MCI_NOTIFY_SUCCESSFUL  0x0001
-#define MCI_NOTIFY_SUPERSEDED  0x0002
-#define MCI_NOTIFY_ABORTED     0x0004
-#define MCI_NOTIFY_FAILURE     0x0008
 #endif
 
 
@@ -144,13 +121,20 @@ typedef int (WINAPI *PFN_SetBkMode)(HDC, int);
 typedef BOOL (WINAPI *PFN_GetTextExtentPoint32W)(HDC, LPCWSTR, int, SIZE*);
 typedef BOOL (WINAPI *PFN_GdiFlush)(void);
 
-// winmm.dll
+// winmm.dll (timer + MCI)
 typedef DWORD   (WINAPI *PFN_timeBeginPeriod)(UINT);
 typedef DWORD   (WINAPI *PFN_timeEndPeriod)(UINT);
 typedef UINT (WINAPI *PFN_timeSetEvent)(UINT, UINT, DWORD_PTR, DWORD_PTR, UINT);
 typedef UINT (WINAPI *PFN_timeKillEvent)(UINT);
-typedef BOOL    (WINAPI *PFN_PlaySoundW)(LPCWSTR, HMODULE, DWORD);
 typedef MCIERROR (WINAPI *PFN_mciSendStringW)(LPCWSTR, LPWSTR, UINT, HWND);
+
+// winmm.dll (waveOut)
+typedef MMRESULT (WINAPI *PFN_waveOutOpen)(LPHWAVEOUT, UINT, LPCWAVEFORMATEX, DWORD_PTR, DWORD_PTR, DWORD);
+typedef MMRESULT (WINAPI *PFN_waveOutClose)(HWAVEOUT);
+typedef MMRESULT (WINAPI *PFN_waveOutPrepareHeader)(HWAVEOUT, LPWAVEHDR, UINT);
+typedef MMRESULT (WINAPI *PFN_waveOutUnprepareHeader)(HWAVEOUT, LPWAVEHDR, UINT);
+typedef MMRESULT (WINAPI *PFN_waveOutWrite)(HWAVEOUT, LPWAVEHDR, UINT);
+typedef MMRESULT (WINAPI *PFN_waveOutReset)(HWAVEOUT);
 
 // gdiplus.dll
 typedef int  (WINAPI *PFN_GdiplusStartup)(ULONG_PTR*, void*, void*);
@@ -270,6 +254,8 @@ typedef HRESULT (WINAPI *PFN_CreateStreamOnHGlobal)(HGLOBAL, BOOL, void**);
 #define KEY_F10       VK_F10
 #define KEY_F11       VK_F11
 #define KEY_F12       VK_F12
+#define KEY_ADD       VK_ADD
+#define KEY_SUBTRACT  VK_SUBTRACT
 
 //---------------------------------------------------------------------
 // Mouse button constants
@@ -431,8 +417,13 @@ public:
 
     // -------- Sound --------
     void PlayBeep(int frequency, int duration);
-    bool PlayWAV(const char *filename, bool loop = false);
-    void StopWAV();
+    int PlayWAV(const char *filename, int repeat = 1, int volume = 1000);
+    int StopWAV(int channel);
+    int IsPlaying(int channel);
+    int SetVolume(int channel, int volume);
+    void StopAll();
+    int SetMasterVolume(int volume);
+    int GetMasterVolume() const;
     bool PlayMusic(const char *filename, bool loop = true);
     void StopMusic();
     bool IsMusicPlaying() const;
@@ -583,6 +574,58 @@ private:
     bool _musicIsMidi;
     std::wstring _musicAlias;
 
+    // audio mixer state (waveOut software mixer)
+    struct _WavData {
+        uint8_t *buffer;
+        uint32_t size;
+        uint32_t sample_rate;
+        uint16_t channels;
+        uint16_t bits_per_sample;
+        int ref_count;
+        _WavData() : buffer(NULL), size(0), sample_rate(0), channels(0),
+                     bits_per_sample(0), ref_count(0) {}
+        ~_WavData() { if (buffer) delete[] buffer; }
+    };
+    struct _Channel {
+        int id;
+        _WavData *wav;
+        uint32_t position;
+        int repeat;
+        int volume;
+        bool is_playing;
+        _Channel() : id(0), wav(NULL), position(0), repeat(1),
+                     volume(1000), is_playing(false) {}
+    };
+    std::unordered_map<std::string, _WavData*> _wav_cache;
+    std::unordered_map<int, _Channel*> _audio_channels;
+    int64_t _next_channel_id;
+    bool _audio_initialized;
+    int _master_volume;
+    HWAVEOUT _hWaveOut;
+    WAVEHDR *_wave_hdr[2];
+    CRITICAL_SECTION _audio_lock;
+    volatile bool _audio_closing;
+    static const int _MAX_CHANNELS = 32;
+    static const int _AUDIO_BUFFER_FRAMES = 2048;
+    static const int _AUDIO_OUTPUT_CHANNELS = 2;
+    static const int _AUDIO_BUFFER_TOTAL = _AUDIO_BUFFER_FRAMES * _AUDIO_OUTPUT_CHANNELS;
+    static const int _AUDIO_BUFFER_BYTES = _AUDIO_BUFFER_TOTAL * sizeof(int16_t);
+    int32_t _mix_buffer[_AUDIO_BUFFER_TOTAL];
+
+    // internal audio methods
+    _WavData *_LoadWAVFromFile(const char *filename);
+    _WavData *_ConvertToTargetFormat(_WavData *src);
+    _WavData *_LoadOrCacheWAV(const char *filename);
+    int _AllocateChannel();
+    void _ReleaseChannel(int channel_id);
+    void _MixAudio(int16_t *output_buffer, int sample_count);
+    void _ClampAndConvert(int32_t *input, int16_t *output, int count);
+    bool _InitAudioBackend();
+    void _ShutdownAudioBackend();
+    static void CALLBACK _WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
+                                          DWORD_PTR dwInstance,
+                                          DWORD_PTR dwParam1, DWORD_PTR dwParam2);
+
     // scene state
     int _scene;
     int _pendingScene;
@@ -727,8 +770,15 @@ static PFN_timeBeginPeriod     _gl_timeBeginPeriod    = NULL;
 static PFN_timeEndPeriod       _gl_timeEndPeriod      = NULL;
 static PFN_timeSetEvent        _gl_timeSetEvent       = NULL;
 static PFN_timeKillEvent       _gl_timeKillEvent      = NULL;
-static PFN_PlaySoundW          _gl_PlaySoundW         = NULL;
 static PFN_mciSendStringW      _gl_mciSendStringW     = NULL;
+
+// winmm.dll (waveOut - loaded separately for software mixer)
+static PFN_waveOutOpen          _gl_waveOutOpen          = NULL;
+static PFN_waveOutClose         _gl_waveOutClose         = NULL;
+static PFN_waveOutPrepareHeader _gl_waveOutPrepareHeader = NULL;
+static PFN_waveOutUnprepareHeader _gl_waveOutUnprepareHeader = NULL;
+static PFN_waveOutWrite         _gl_waveOutWrite         = NULL;
+static PFN_waveOutReset         _gl_waveOutReset         = NULL;
 
 static int _gamelib_apis_loaded = 0;
 
@@ -854,8 +904,15 @@ static int _gamelib_load_apis()
     _gl_timeEndPeriod     = _gamelib_load_proc<PFN_timeEndPeriod>(hWinmm, "timeEndPeriod");
     _gl_timeSetEvent      = _gamelib_load_proc<PFN_timeSetEvent>(hWinmm, "timeSetEvent");
     _gl_timeKillEvent     = _gamelib_load_proc<PFN_timeKillEvent>(hWinmm, "timeKillEvent");
-    _gl_PlaySoundW        = _gamelib_load_proc<PFN_PlaySoundW>(hWinmm, "PlaySoundW");
     _gl_mciSendStringW    = _gamelib_load_proc<PFN_mciSendStringW>(hWinmm, "mciSendStringW");
+
+    // waveOut APIs for software mixer (loaded from same winmm.dll)
+    _gl_waveOutOpen          = _gamelib_load_proc<PFN_waveOutOpen>(hWinmm, "waveOutOpen");
+    _gl_waveOutClose         = _gamelib_load_proc<PFN_waveOutClose>(hWinmm, "waveOutClose");
+    _gl_waveOutPrepareHeader = _gamelib_load_proc<PFN_waveOutPrepareHeader>(hWinmm, "waveOutPrepareHeader");
+    _gl_waveOutUnprepareHeader = _gamelib_load_proc<PFN_waveOutUnprepareHeader>(hWinmm, "waveOutUnprepareHeader");
+    _gl_waveOutWrite         = _gamelib_load_proc<PFN_waveOutWrite>(hWinmm, "waveOutWrite");
+    _gl_waveOutReset         = _gamelib_load_proc<PFN_waveOutReset>(hWinmm, "waveOutReset");
 
     if (!_gl_SetDIBitsToDevice || !_gl_GetStockObject ||
         !_gl_CreateCompatibleDC || !_gl_DeleteDC ||
@@ -864,7 +921,7 @@ static int _gamelib_load_apis()
         !_gl_CreateFontW || !_gl_TextOutW ||
         !_gl_SetTextColor || !_gl_SetBkMode || !_gl_GetTextExtentPoint32W ||
         !_gl_timeBeginPeriod  || !_gl_timeEndPeriod ||
-        !_gl_PlaySoundW       || !_gl_mciSendStringW) {
+        !_gl_mciSendStringW) {
         // NULL out all pointers to prevent dangling state
         _gl_SetDIBitsToDevice = NULL; _gl_GetStockObject = NULL;
         _gl_CreateCompatibleDC = NULL; _gl_DeleteDC = NULL;
@@ -876,8 +933,11 @@ static int _gamelib_load_apis()
         _gl_GetTextExtentPoint32W = NULL; _gl_GdiFlush = NULL;
         _gl_timeBeginPeriod = NULL;
         _gl_timeEndPeriod = NULL; _gl_timeSetEvent = NULL;
-        _gl_timeKillEvent = NULL; _gl_PlaySoundW = NULL;
+        _gl_timeKillEvent = NULL;
         _gl_mciSendStringW = NULL;
+        _gl_waveOutOpen = NULL; _gl_waveOutClose = NULL;
+        _gl_waveOutPrepareHeader = NULL; _gl_waveOutUnprepareHeader = NULL;
+        _gl_waveOutWrite = NULL; _gl_waveOutReset = NULL;
         FreeLibrary(hGdi32);
         FreeLibrary(hWinmm);
         return -1;
@@ -1115,6 +1175,15 @@ GameLib::GameLib()
     _musicPlaying = false;
     _musicLoop = false;
     _musicIsMidi = false;
+    _next_channel_id = 1;
+    _audio_initialized = false;
+    _master_volume = 1000;
+    _hWaveOut = NULL;
+    _wave_hdr[0] = NULL;
+    _wave_hdr[1] = NULL;
+    _audio_closing = false;
+    memset(_mix_buffer, 0, sizeof(_mix_buffer));
+    InitializeCriticalSection(&_audio_lock);
     _scene = 0;
     _pendingScene = 0;
     _hasPendingScene = false;
@@ -1324,7 +1393,21 @@ void GameLib::_DestroyTimingResources()
 //---------------------------------------------------------------------
 GameLib::~GameLib()
 {
-    StopWAV();
+    // Shutdown audio backend first (stops callbacks, prevents deadlock)
+    _ShutdownAudioBackend();
+
+    // Clean up audio channels and WAV cache (no lock needed since callbacks stopped)
+    for (std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+         it != _audio_channels.end(); ++it) {
+        delete it->second;
+    }
+    _audio_channels.clear();
+    for (std::unordered_map<std::string, _WavData*>::iterator it = _wav_cache.begin();
+         it != _wav_cache.end(); ++it) {
+        delete it->second;
+    }
+    _wav_cache.clear();
+    DeleteCriticalSection(&_audio_lock);
 
     // Stop music
     if ((_musicPlaying || _musicIsMidi) && _gl_mciSendStringW) {
@@ -4209,27 +4292,6 @@ void GameLib::PlayBeep(int frequency, int duration)
     Beep(frequency, duration);
 }
 
-bool GameLib::PlayWAV(const char *filename, bool loop)
-{
-    if (!_gl_PlaySoundW || !filename) return false;
-
-    wchar_t *wideFilename = _gamelib_utf8_to_wide(filename, NULL);
-    if (!wideFilename) return false;
-
-    DWORD flags = SND_FILENAME | SND_ASYNC;
-    if (loop) flags |= SND_LOOP;
-
-    BOOL ok = _gl_PlaySoundW(wideFilename, NULL, flags);
-    free(wideFilename);
-    return ok != 0;
-}
-
-void GameLib::StopWAV()
-{
-    if (_gl_PlaySoundW)
-        _gl_PlaySoundW(NULL, NULL, 0);
-}
-
 bool GameLib::PlayMusic(const char *filename, bool loop)
 {
     if (!filename || !_gl_mciSendStringW) return false;
@@ -4842,6 +4904,474 @@ bool GameLib::DeleteSave(const char *filename)
 {
     if (!filename) return false;
     return _gamelib_delete_file_utf8(filename);
+}
+
+
+//=====================================================================
+// Software Mixer (waveOut backend, dynamically loaded)
+//=====================================================================
+
+bool GameLib::_InitAudioBackend()
+{
+    if (!_gl_waveOutOpen) return false;
+
+    WAVEFORMATEX wfx;
+    memset(&wfx, 0, sizeof(wfx));
+    wfx.wFormatTag = WAVE_FORMAT_PCM;
+    wfx.nSamplesPerSec = 44100;
+    wfx.wBitsPerSample = 16;
+    wfx.nChannels = 2;
+    wfx.nBlockAlign = (wfx.wBitsPerSample / 8) * wfx.nChannels;
+    wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+    wfx.cbSize = 0;
+
+    MMRESULT result = _gl_waveOutOpen(&_hWaveOut, WAVE_MAPPER, &wfx,
+                                       (DWORD_PTR)_WaveOutCallback,
+                                       (DWORD_PTR)this, CALLBACK_FUNCTION);
+    if (result != MMSYSERR_NOERROR) {
+        _hWaveOut = NULL;
+        return false;
+    }
+
+    // Prepare and submit initial buffers (double buffering)
+    for (int i = 0; i < 2; i++) {
+        _wave_hdr[i] = new WAVEHDR;
+        memset(_wave_hdr[i], 0, sizeof(WAVEHDR));
+        _wave_hdr[i]->lpData = (LPSTR)new char[_AUDIO_BUFFER_BYTES];
+        _wave_hdr[i]->dwBufferLength = _AUDIO_BUFFER_BYTES;
+        memset(_wave_hdr[i]->lpData, 0, _AUDIO_BUFFER_BYTES);
+        _gl_waveOutPrepareHeader(_hWaveOut, _wave_hdr[i], sizeof(WAVEHDR));
+        _gl_waveOutWrite(_hWaveOut, _wave_hdr[i], sizeof(WAVEHDR));
+    }
+    return true;
+}
+
+void GameLib::_ShutdownAudioBackend()
+{
+    if (_hWaveOut) {
+        _audio_closing = true;
+        _gl_waveOutReset(_hWaveOut);
+        Sleep(50);
+        _gl_waveOutClose(_hWaveOut);
+        _hWaveOut = NULL;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (_wave_hdr[i]) {
+            if (_wave_hdr[i]->lpData) {
+                delete[] _wave_hdr[i]->lpData;
+                _wave_hdr[i]->lpData = NULL;
+            }
+            delete _wave_hdr[i];
+            _wave_hdr[i] = NULL;
+        }
+    }
+}
+
+void CALLBACK GameLib::_WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
+                                         DWORD_PTR dwInstance,
+                                         DWORD_PTR dwParam1,
+                                         DWORD_PTR dwParam2)
+{
+    if (uMsg != WOM_DONE) return;
+
+    GameLib *game = (GameLib*)dwInstance;
+    if (game->_audio_closing) return;
+
+    WAVEHDR *hdr = (WAVEHDR*)dwParam1;
+    if (!hdr || !hdr->lpData) return;
+
+    int16_t output_buffer[_AUDIO_BUFFER_TOTAL];
+    game->_MixAudio(output_buffer, _AUDIO_BUFFER_TOTAL);
+
+    if (game->_audio_closing) return;
+
+    memcpy(hdr->lpData, output_buffer, _AUDIO_BUFFER_BYTES);
+    hdr->dwBufferLength = _AUDIO_BUFFER_BYTES;
+    hdr->dwFlags = 0;
+    _gl_waveOutPrepareHeader(hwo, hdr, sizeof(WAVEHDR));
+    _gl_waveOutWrite(hwo, hdr, sizeof(WAVEHDR));
+}
+
+void GameLib::_ClampAndConvert(int32_t *input, int16_t *output, int count)
+{
+    for (int i = 0; i < count; i++) {
+        int32_t sample = input[i];
+        if (sample > 32767) sample = 32767;
+        else if (sample < -32768) sample = -32768;
+        output[i] = (int16_t)sample;
+    }
+}
+
+void GameLib::_MixAudio(int16_t *output_buffer, int sample_count)
+{
+    for (int i = 0; i < sample_count; i++) {
+        _mix_buffer[i] = 0;
+    }
+
+    EnterCriticalSection(&_audio_lock);
+
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+    while (it != _audio_channels.end()) {
+        _Channel *ch = it->second;
+        if (!ch->is_playing) {
+            ++it;
+            continue;
+        }
+
+        float vol = (ch->volume / 1000.0f) * (_master_volume / 1000.0f);
+        int bytes_per_sample = ch->wav->bits_per_sample / 8;
+        int bytes_per_frame = bytes_per_sample * ch->wav->channels;
+        int frames_to_mix = sample_count / ch->wav->channels;
+
+        uint32_t remaining_bytes = ch->wav->size - ch->position;
+        uint32_t remaining_frames = remaining_bytes / bytes_per_frame;
+
+        if (remaining_frames == 0) {
+            frames_to_mix = 0;
+        } else if ((uint32_t)frames_to_mix > remaining_frames) {
+            frames_to_mix = (int)remaining_frames;
+        }
+
+        for (int frame = 0; frame < frames_to_mix; frame++) {
+            uint32_t frame_start = ch->position + frame * bytes_per_frame;
+            for (uint16_t ch_idx = 0; ch_idx < ch->wav->channels; ch_idx++) {
+                uint32_t sample_pos = frame_start + ch_idx * bytes_per_sample;
+                int16_t sample = 0;
+                if (sample_pos + 1 < ch->wav->size) {
+                    sample = (int16_t)((uint16_t)(uint8_t)ch->wav->buffer[sample_pos] |
+                                       ((uint16_t)(uint8_t)ch->wav->buffer[sample_pos + 1] << 8));
+                }
+                int out_idx = frame * ch->wav->channels + ch_idx;
+                _mix_buffer[out_idx] += (int32_t)(sample * vol);
+            }
+        }
+        ch->position += frames_to_mix * bytes_per_frame;
+
+        if (ch->position >= ch->wav->size) {
+            if (ch->repeat == 0) {
+                ch->position = 0;
+            } else if (ch->repeat > 1) {
+                ch->position = 0;
+                ch->repeat--;
+            } else {
+                if (ch->wav) ch->wav->ref_count--;
+                delete ch;
+                it = _audio_channels.erase(it);
+                continue;
+            }
+        }
+        ++it;
+    }
+
+    LeaveCriticalSection(&_audio_lock);
+
+    _ClampAndConvert(_mix_buffer, output_buffer, sample_count);
+}
+
+GameLib::_WavData *GameLib::_LoadWAVFromFile(const char *filename)
+{
+    FILE *f = _gamelib_fopen_utf8(filename, L"rb");
+    if (!f) return NULL;
+
+    char header[44];
+    if (fread(header, 1, 44, f) != 44) {
+        fclose(f);
+        return NULL;
+    }
+
+    if (header[0] != 'R' || header[1] != 'I' || header[2] != 'F' || header[3] != 'F') {
+        fclose(f);
+        return NULL;
+    }
+    if (header[8] != 'W' || header[9] != 'A' || header[10] != 'V' || header[11] != 'E') {
+        fclose(f);
+        return NULL;
+    }
+
+    uint16_t audio_format = (uint16_t)(header[20] | (header[21] << 8));
+    if (audio_format != 1) {
+        fclose(f);
+        return NULL;
+    }
+
+    _WavData *wav = new _WavData();
+    wav->channels = (uint16_t)((uint8_t)header[22] | ((uint8_t)header[23] << 8));
+    wav->sample_rate = (uint32_t)((uint8_t)header[24] | ((uint8_t)header[25] << 8) |
+                                   ((uint8_t)header[26] << 16) | ((uint8_t)header[27] << 24));
+    wav->bits_per_sample = (uint16_t)((uint8_t)header[34] | ((uint8_t)header[35] << 8));
+
+    if (wav->channels == 0 || wav->channels > 2) {
+        delete wav; fclose(f); return NULL;
+    }
+    if (wav->sample_rate == 0) {
+        delete wav; fclose(f); return NULL;
+    }
+    if (wav->bits_per_sample != 8 && wav->bits_per_sample != 16) {
+        delete wav; fclose(f); return NULL;
+    }
+
+    // Find data chunk
+    fseek(f, 12, SEEK_SET);
+    bool found_data = false;
+    while (!found_data) {
+        char chunk_id[4];
+        uint32_t chunk_size = 0;
+        if (fread(chunk_id, 1, 4, f) != 4) break;
+        if (fread(&chunk_size, 4, 1, f) != 1) break;
+        if (chunk_id[0] == 'd' && chunk_id[1] == 'a' &&
+            chunk_id[2] == 't' && chunk_id[3] == 'a') {
+            found_data = true;
+            wav->size = chunk_size;
+        } else {
+            uint32_t skip = chunk_size + (chunk_size % 2);
+            fseek(f, skip, SEEK_CUR);
+        }
+    }
+
+    if (!found_data || wav->size == 0 || wav->size > 100 * 1024 * 1024) {
+        delete wav;
+        fclose(f);
+        return NULL;
+    }
+
+    wav->buffer = new uint8_t[wav->size];
+    if (fread(wav->buffer, 1, wav->size, f) != wav->size) {
+        delete wav;
+        fclose(f);
+        return NULL;
+    }
+
+    fclose(f);
+
+    _WavData *converted = _ConvertToTargetFormat(wav);
+    delete wav;
+    return converted;
+}
+
+GameLib::_WavData *GameLib::_ConvertToTargetFormat(_WavData *src)
+{
+    if (!src || !src->buffer || src->size == 0 ||
+        src->sample_rate == 0 || src->channels == 0) {
+        return NULL;
+    }
+
+    const uint32_t target_rate = 44100;
+    const uint16_t target_channels = 2;
+    const uint16_t target_bps = 16;
+
+    uint32_t bytes_per_sample = src->bits_per_sample / 8;
+    uint32_t total_samples = src->size / bytes_per_sample;
+    uint32_t samples_per_channel = total_samples / src->channels;
+
+    // Step 1: Decode to 16-bit array
+    int16_t *decoded = new int16_t[total_samples];
+    for (uint32_t i = 0; i < total_samples; i++) {
+        if (src->bits_per_sample == 16) {
+            decoded[i] = (int16_t)((uint16_t)(uint8_t)src->buffer[i * 2] |
+                                    ((uint16_t)(uint8_t)src->buffer[i * 2 + 1] << 8));
+        } else if (src->bits_per_sample == 8) {
+            decoded[i] = (int16_t)((src->buffer[i] - 128) << 8);
+        }
+    }
+
+    // Step 2: Resample (linear interpolation)
+    double ratio = (double)target_rate / src->sample_rate;
+    double step = (double)src->sample_rate / target_rate;
+    uint32_t new_samples_per_ch = (uint32_t)(samples_per_channel * ratio);
+    uint32_t new_total_samples = new_samples_per_ch * src->channels;
+
+    int16_t *resampled = new int16_t[new_total_samples];
+    for (uint16_t ch = 0; ch < src->channels; ch++) {
+        double src_index = 0;
+        for (uint32_t i = 0; i < new_samples_per_ch; i++) {
+            uint32_t idx = (uint32_t)src_index;
+            if (idx >= samples_per_channel) idx = samples_per_channel - 1;
+            double frac = src_index - idx;
+
+            int16_t s0 = decoded[idx * src->channels + ch];
+            int16_t s1 = (idx + 1 < samples_per_channel) ?
+                         decoded[(idx + 1) * src->channels + ch] : s0;
+
+            resampled[i * src->channels + ch] = (int16_t)(s0 * (1.0 - frac) + s1 * frac);
+            src_index += step;
+        }
+    }
+    delete[] decoded;
+
+    // Step 3: Convert mono to stereo
+    int16_t *stereo = NULL;
+    uint32_t stereo_samples = 0;
+
+    if (src->channels == 1) {
+        stereo_samples = new_samples_per_ch * 2;
+        stereo = new int16_t[stereo_samples];
+        for (uint32_t i = 0; i < new_samples_per_ch; i++) {
+            stereo[i * 2] = resampled[i];
+            stereo[i * 2 + 1] = resampled[i];
+        }
+        delete[] resampled;
+    } else {
+        stereo = resampled;
+        stereo_samples = new_total_samples;
+    }
+
+    // Step 4: Create new WavData
+    _WavData *dst = new _WavData();
+    dst->sample_rate = target_rate;
+    dst->channels = target_channels;
+    dst->bits_per_sample = target_bps;
+    dst->size = stereo_samples * sizeof(int16_t);
+    dst->buffer = new uint8_t[dst->size];
+    memcpy(dst->buffer, stereo, dst->size);
+
+    delete[] stereo;
+    return dst;
+}
+
+GameLib::_WavData *GameLib::_LoadOrCacheWAV(const char *filename)
+{
+    std::string key(filename);
+    std::unordered_map<std::string, _WavData*>::iterator it = _wav_cache.find(key);
+    if (it != _wav_cache.end()) {
+        it->second->ref_count++;
+        return it->second;
+    }
+
+    _WavData *wav = _LoadWAVFromFile(filename);
+    if (wav) {
+        wav->ref_count = 1;
+        _wav_cache[key] = wav;
+    }
+    return wav;
+}
+
+int GameLib::_AllocateChannel()
+{
+    if ((int)_audio_channels.size() >= _MAX_CHANNELS) {
+        return 0;
+    }
+    if (_next_channel_id > 32700) {
+        _next_channel_id = 1;
+    }
+    while (_audio_channels.count((int)_next_channel_id)) {
+        _next_channel_id++;
+        if (_next_channel_id > 32700) {
+            _next_channel_id = 1;
+        }
+    }
+    int id = (int)_next_channel_id;
+    _next_channel_id++;
+    return id;
+}
+
+void GameLib::_ReleaseChannel(int channel_id)
+{
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel_id);
+    if (it != _audio_channels.end()) {
+        if (it->second->wav) {
+            it->second->wav->ref_count--;
+        }
+        delete it->second;
+        _audio_channels.erase(it);
+    }
+}
+
+
+//=====================================================================
+// Public Audio API
+//=====================================================================
+
+int GameLib::PlayWAV(const char *filename, int repeat, int volume)
+{
+    if (!filename) return -2;
+    if (!_audio_initialized) {
+        _audio_initialized = _InitAudioBackend();
+        if (!_audio_initialized) return -2;
+    }
+
+    _WavData *wav = _LoadOrCacheWAV(filename);
+    if (!wav) return -1;
+
+    int ch_id = _AllocateChannel();
+    if (ch_id == 0) return -4;
+
+    _Channel *ch = new _Channel();
+    ch->id = ch_id;
+    ch->wav = wav;
+    ch->position = 0;
+    ch->repeat = repeat;
+    ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    ch->is_playing = true;
+
+    EnterCriticalSection(&_audio_lock);
+    _audio_channels[ch_id] = ch;
+    LeaveCriticalSection(&_audio_lock);
+
+    return ch_id;
+}
+
+int GameLib::StopWAV(int channel)
+{
+    EnterCriticalSection(&_audio_lock);
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    if (it == _audio_channels.end()) {
+        LeaveCriticalSection(&_audio_lock);
+        return -1;
+    }
+    _ReleaseChannel(channel);
+    LeaveCriticalSection(&_audio_lock);
+    return 0;
+}
+
+int GameLib::IsPlaying(int channel)
+{
+    EnterCriticalSection(&_audio_lock);
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    int result = -1;
+    if (it != _audio_channels.end()) {
+        result = it->second->is_playing ? 1 : 0;
+    }
+    LeaveCriticalSection(&_audio_lock);
+    return result;
+}
+
+int GameLib::SetVolume(int channel, int volume)
+{
+    EnterCriticalSection(&_audio_lock);
+    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    int result = -1;
+    if (it != _audio_channels.end()) {
+        it->second->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+        result = 0;
+    }
+    LeaveCriticalSection(&_audio_lock);
+    return result;
+}
+
+void GameLib::StopAll()
+{
+    EnterCriticalSection(&_audio_lock);
+    std::vector<int> channel_ids;
+    for (std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+         it != _audio_channels.end(); ++it) {
+        channel_ids.push_back(it->first);
+    }
+    for (size_t i = 0; i < channel_ids.size(); i++) {
+        _ReleaseChannel(channel_ids[i]);
+    }
+    _audio_channels.clear();
+    LeaveCriticalSection(&_audio_lock);
+}
+
+int GameLib::SetMasterVolume(int volume)
+{
+    _master_volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    return 0;
+}
+
+int GameLib::GetMasterVolume() const
+{
+    return _master_volume;
 }
 
 

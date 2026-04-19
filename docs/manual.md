@@ -1688,11 +1688,11 @@ void PlayBeep(int frequency, int duration);
 
 ### PlayWAV
 
-播放 WAV 音效（异步）。
+播放 WAV 音效（异步，多通道）。
 
 **函数声明**
 ```cpp
-bool PlayWAV(const char *filename, bool loop = false);
+int PlayWAV(const char *filename, int repeat = 1, int volume = 1000);
 ```
 
 **参数**
@@ -1700,25 +1700,90 @@ bool PlayWAV(const char *filename, bool loop = false);
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `filename` | `const char *` | WAV 文件路径，UTF-8 |
-| `loop` | `bool` | 是否循环播放，默认 `false` |
+| `repeat` | `int` | 重复次数，-1 为无限循环，默认 1 |
+| `volume` | `int` | 通道音量 0~1000，默认 1000 |
 
 **返回值**
 
-成功返回 `true`，失败返回 `false`。
+成功返回通道 ID（正整数），文件错误返回 -1，音频设备初始化失败返回 -2。
 
 **备注**
 
-使用 `PlaySoundW` 播放。与 `PlayMusic` 独立通道，可同时播放。
+使用 waveOut 软件混音器播放。同一 WAV 文件可重叠播放（每次分配独立通道）。WAV 文件按 `filename` 缓存，重复播放同一文件不重新读取。音频设备惰性初始化，首次调用时才创建 waveOut 设备。与 `PlayMusic` 独立通道，可同时播放。
 
 ---
 
 ### StopWAV
 
-停止当前 WAV 播放。
+停止指定通道的 WAV 播放。
 
 **函数声明**
 ```cpp
-void StopWAV();
+int StopWAV(int channel);
+```
+
+**参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `channel` | `int` | `PlayWAV` 返回的通道 ID |
+
+**返回值**
+
+成功返回 1，无效通道返回 0。
+
+---
+
+### IsPlaying
+
+查询指定通道是否仍在播放。
+
+**函数声明**
+```cpp
+int IsPlaying(int channel);
+```
+
+**参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `channel` | `int` | `PlayWAV` 返回的通道 ID |
+
+**返回值**
+
+正在播放返回 1，已停止或无效通道返回 0。
+
+---
+
+### SetVolume
+
+设置指定通道音量。
+
+**函数声明**
+```cpp
+int SetVolume(int channel, int volume);
+```
+
+**参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `channel` | `int` | `PlayWAV` 返回的通道 ID |
+| `volume` | `int` | 音量 0~1000 |
+
+**返回值**
+
+成功返回新音量值，无效通道返回 -1。
+
+---
+
+### StopAll
+
+停止所有音效播放。
+
+**函数声明**
+```cpp
+void StopAll();
 ```
 
 **参数**
@@ -1726,6 +1791,45 @@ void StopWAV();
 
 **返回值**
 无
+
+---
+
+### SetMasterVolume
+
+设置主音量。
+
+**函数声明**
+```cpp
+int SetMasterVolume(int volume);
+```
+
+**参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `volume` | `int` | 主音量 0~1000，自动钳制 |
+
+**返回值**
+
+返回实际设置的主音量值。
+
+---
+
+### GetMasterVolume
+
+获取当前主音量。
+
+**函数声明**
+```cpp
+int GetMasterVolume() const;
+```
+
+**参数**
+无
+
+**返回值**
+
+当前主音量值（0~1000）。
 
 ---
 

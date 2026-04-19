@@ -111,8 +111,13 @@
 
 | 函数                        | 说明                     |
 | --------------------------- | ------------------------ |
-| `PlayWAV(filename, loop)`   | 播放音效，成功返回 `true` |
-| `StopWAV()`                 | 停止音效                 |
+| `PlayWAV(filename, repeat, volume)` | 播放音效，返回通道 ID（正整数），失败 -1/-2 |
+| `StopWAV(channel)`          | 停止指定通道音效，成功返回 1 |
+| `IsPlaying(channel)`        | 查询通道是否播放中，返回 1/0 |
+| `SetVolume(channel, volume)` | 设置通道音量（0~1000） |
+| `StopAll()`                 | 停止所有音效             |
+| `SetMasterVolume(volume)`   | 设置主音量（0~1000），返回实际值 |
+| `GetMasterVolume()`         | 返回当前主音量           |
 | `PlayMusic(filename, loop)` | 播放背景音乐（MP3/MIDI/WAV；按扩展名选择 MCI 类型，MIDI 循环走 notify 重播），成功返回 `true` |
 | `StopMusic()`               | 停止背景音乐             |
 | `IsMusicPlaying()`          | 当前音乐是否处于播放状态 |
