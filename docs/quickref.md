@@ -11,6 +11,7 @@
 | `Update()`                   | 刷新画面、处理输入           |
 | `WaitFrame(fps)`             | 帧率控制                     |
 | `GetWidth()` / `GetHeight()` | framebuffer 逻辑尺寸         |
+| `GetFramebuffer()`          | framebuffer 指针（`uint32_t*`），寻址 `fb[y*W+x]` |
 | `WinResize(w, h)`            | 设置窗口客户区尺寸           |
 | `SetMaximized(maximized)`    | 最大化或还原可缩放窗口       |
 | `GetDeltaTime()`             | 帧间隔（秒，返回 `double`）  |

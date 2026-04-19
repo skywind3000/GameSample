@@ -185,6 +185,26 @@ Framebuffer 宽度/高度（像素），类型 `int`。
 
 ---
 
+### GetFramebuffer
+
+获取 framebuffer 指针，可直接读写像素。
+
+**函数声明**
+```cpp
+uint32_t *GetFramebuffer();
+```
+
+**参数**
+无
+
+**返回值**
+
+Framebuffer 指针（`uint32_t*`）。`Open()` 前或窗口关闭后返回 `NULL`。
+
+像素寻址方式：`fb[y * GetWidth() + x]`，其中 `fb` 为返回值。
+
+---
+
 ### WinResize
 
 设置窗口客户区尺寸，不改变 framebuffer 尺寸。

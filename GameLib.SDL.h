@@ -57,7 +57,7 @@
 
 #define GAMELIB_SDL_VERSION_MAJOR 1
 #define GAMELIB_SDL_VERSION_MINOR 9
-#define GAMELIB_SDL_VERSION_PATCH 0
+#define GAMELIB_SDL_VERSION_PATCH 1
 
 #include <stdint.h>
 #include <limits.h>
@@ -306,6 +306,7 @@ public:
     double GetTime() const;
     int GetWidth() const;
     int GetHeight() const;
+    uint32_t *GetFramebuffer();
     void WinResize(int width, int height);
     void SetMaximized(bool maximized);
     void SetTitle(const char *title);
@@ -1776,6 +1777,7 @@ double GameLib::GetTime() const
 }
 int GameLib::GetWidth() const { return _width; }
 int GameLib::GetHeight() const { return _height; }
+uint32_t *GameLib::GetFramebuffer() { return _framebuffer; }
 
 void GameLib::WinResize(int width, int height)
 {
