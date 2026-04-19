@@ -1,15 +1,16 @@
 # Geometry Wars - 技术实现规范
 
-基于 GameLib.h 的霓虹风格几何射击游戏，无尽模式。本文档记录完整的技术实现细节，便于在另一台机器上继续开发。
+本项目是 GameLib.h 的霓虹风格几何射击游戏，无尽模式。本文档记录完整的技术实现细节，便于在另一台机器上继续开发。
 
 ## 1. 项目结构
 
 ```
 GeometryWars/
-├── geometry.cpp      # 游戏源码（单文件，~1100 行）
+├── geometry.cpp      # 游戏源码（单文件，~1300 行）
 ├── design.md         # 游戏设计文档（玩法、敌人、计分、操控）
 ├── spec.md           # 技术文档（本文档）
 ├── assets.md         # 资源列表（音效素材索引）
+├── patch.md          # 迭代补丁计划（6 个新功能的详细规划）
 └── assets/           # 音效资源
     ├── explosion-01.wav ~ explosion-08.wav  # 爆炸音效（8个变体）
     ├── shoot-01.wav ~ shoot-04.wav          # 射击音效（4个变体）
@@ -67,6 +68,9 @@ D:\Dev\mingw32\bin\g++.exe
 | `MAX_PARTICLES` | 800 | 同时存在的最大粒子数 |
 | `MAX_FLOAT_TEXTS` | 30 | 同时存在的最大浮动文字数 |
 | `MAX_POWERUPS` | 5 | 同时存在的最大道具数 |
+| `MAX_STARS_FAR` | 50 | 远层星空粒子数 |
+| `MAX_STARS_NEAR` | 30 | 近层星空粒子数 |
+| `LB_SIZE` | 10 | 排行榜条目数 |
 
 ### 游戏参数
 
@@ -75,7 +79,15 @@ D:\Dev\mingw32\bin\g++.exe
 | `PLAYER_SPEED` | 250.0f | 玩家移动速度（px/s） |
 | `BULLET_SPEED` | 810.0f | 子弹速度（px/s，已提升 35%） |
 | `SHOOT_RATE` | 0.12f | 射击间隔（秒），约每秒 8.3 发 |
+| `ENERGY_SHOOT_RATE` | 0.08f | 能量模式射击间隔（秒），约每秒 12.5 发 |
 | `COMBO_TIMEOUT` | 2.0f | 连击超时（秒） |
+| `ENERGY_DURATION` | 5.0f | 能量道具持续时间（秒） |
+| `POPUP_LIFE` | 2.0f | 弹出通知总显示时间（秒） |
+| `POPUP_GROW_TIME` | 0.2f | 弹出通知渐增时间（秒） |
+| `POPUP_FADE_TIME` | 0.5f | 弹出通知渐隐时间（秒） |
+| `MAX_LIVES` | 3 | 玩家初始生命数 |
+| `RESPAWN_INVINCIBLE` | 2.0f | 重生无敌时间（秒） |
+| `SPAWN_CLEAR_RADIUS` | 150.0f | 重生时清除敌人半径（px） |
 
 ### 存档
 
@@ -107,6 +119,7 @@ D:\Dev\mingw32\bin\g++.exe
 | `SCENE_COMBAT` | 2 | 战斗（正常游戏） |
 | `SCENE_DEATH` | 3 | 玩家死亡动画 |
 | `SCENE_GAME_OVER` | 4 | 结算画面 |
+| `SCENE_LEADERBOARD` | 5 | 排行榜画面 |
 
 ## 4. 数据结构
 
@@ -202,20 +215,65 @@ struct PowerUp {
     float life;       // 剩余时间（秒，最大 8s）
     float pulse;      // 脉冲动画计时
     bool active;      // 是否活跃
-    int type;         // 类型：0=清屏(Nuke)
+    int type;         // 类型：0=清屏(Nuke), 1=能量(Energy)
 };
 ```
 
-**清屏道具 (Nuke)**：
+**清屏道具 (Nuke)**（type 0）：
 - **生成**：每 15~25 秒随机生成，距离玩家 > 200px
 - **外观**：霓虹青色菱形，脉冲呼吸动画，剩余 3 秒时闪烁
 - **触发**：玩家碰撞检测（距离 < 道具半径 + 12px）
 - **效果** (`triggerNuke`)：
-  1. 播放爆炸音效
-  2. 屏幕强震（8px，20帧）
-  3. 网格强力冲击（半径 600，强度 400）
-  4. 每个敌人独立爆炸 + 得分飘字
-  5. 玩家位置白色大闪光（50粒子）
+  1. 弹出 "NUKE ACTIVATED!" 通知
+  2. 播放爆炸音效
+  3. 屏幕强震（8px，20帧）
+  4. 网格强力冲击（半径 600，强度 400）
+  5. 每个敌人独立爆炸 + 得分飘字
+  6. 玩家位置白色大闪光（50粒子）
+
+**能量道具 (Energy)**（type 1）：
+- **掉落**：击杀敌人时概率掉落——蜂群圆 20%、追踪三角 30%、弹跳方块 35%、坦克 50%
+- **外观**：金色菱形，橙色光晕，脉冲呼吸动画，剩余 3 秒时闪烁
+- **触发**：玩家碰撞检测（距离 < 道具半径 + 12px）
+- **效果**（持续 5 秒）：
+  1. 弹出 "SPREAD SHOT!" 通知 + 震动（3px, 8帧）
+  2. 射击变为 5 发扇形散射（角度偏移 -15°, -7°, 0°, +7°, +15°）
+  3. 射速提升至 0.08s 间隔
+  4. 玩家金色光晕覆盖
+  5. HUD 显示金色能量条
+- **重生时重置**：失去一命时 `energyActive = false`
+
+### 4.7 星空粒子
+
+```cpp
+struct Star { float x, y; uint32_t color; float drift; float sz; };
+```
+
+**两层星空**：
+- 远层（50颗）：sz=1~2px, alpha=30~60, drift=5~10px/s 向下, 颜色白/淡蓝/淡青
+- 近层（30颗）：sz=2~3px, alpha=60~100, drift=15~25px/s 向下, 颜色白/淡蓝/淡青
+- 漂出地图底部后从顶部重新出现
+
+### 4.8 弹出通知
+
+```cpp
+struct Popup { char text[32]; uint32_t color; float life; float maxLife; int scale; };
+```
+
+**动画**：
+- 前 0.2s：scale 从 1 渐增到目标值（整数阶梯）
+- 中间段：保持目标 scale
+- 最后 0.5s：alpha 渐隐
+- 屏幕中央显示，每局每种成就只触发一次
+
+### 4.9 排行榜条目
+
+```cpp
+struct LBEntry { int score; float time; int kills; int combo; };
+```
+
+**存储**：`geometry_wars.sav` 中 lb_score0~9, lb_time0~9, lb_kills0~9, lb_combo0~9（40 个 key）
+**排序**：按分数降序
 
 ## 5. 场景状态机
 
@@ -225,51 +283,62 @@ struct PowerUp {
 
 ```
 SCENE_TITLE (1)
-    │ Enter 键
-    ▼
-SCENE_COMBAT (2) ───── 玩家被碰撞 ────→ SCENE_DEATH (3)
-    │                                         │ 1.5秒后
-    │                                         ▼
-    │                                   SCENE_GAME_OVER (4)
-    │                                         │ R 键
-    └─────────────────────────────────────────┘
+    │ Enter 键              │ L 键
+    ▼                        ▼
+SCENE_COMBAT (2) ─── 玩家最终死亡 ──→ SCENE_DEATH (3)
+    │                                    │ 1.5秒后
+    │                                    ▼
+    │                              SCENE_GAME_OVER (4)
+    │                                    │ Space 键
+    └────────────────────── SCENE_LEADERBOARD (5) ←──┘
+                                         │ Space 键
+                                         ▼
+                                    SCENE_TITLE (1)
 ```
 
 ### 5.2 各场景职责
 
 #### SCENE_TITLE - 标题画面
-- **更新**：弹簧网格（自动波动）
-- **绘制**：网格、标题文字（上部黄金分割线 Y≈229 处）、"PRESS ENTER TO START"（闪烁）、操作说明、历史纪录（底部灰色单行 `BEST: xxx | TIME M:SS`）
-- **输入**：Enter → 重置游戏数据，切换到 SCENE_COMBAT
+- **更新**：弹簧网格（自动波动）、星空漂移
+- **绘制**：星空 → 网格 → 标题文字 → 操作说明 → 历史纪录
+- **输入**：Enter → 重置游戏数据，切换到 SCENE_COMBAT；L → 切换到 SCENE_LEADERBOARD
 - **摄像机**：不更新
 
 #### SCENE_COMBAT - 战斗
-- **更新**：调用 `gameUpdate()` 处理所有游戏逻辑（含道具生成、浮动文字、道具碰撞）
-- **绘制**：网格 → 地图边框 → 子弹 → 敌人 → 玩家 → 道具 → 粒子 → 浮动文字 → HUD
+- **更新**：调用 `gameUpdate()` 处理所有游戏逻辑（含道具生成、浮动文字、道具碰撞、能量计时、弹出通知、重生无敌）
+- **绘制**：星空 → 网格 → 地图边框 → 子弹 → 敌人 → 玩家 → 道具 → 粒子 → 浮动文字 → 弹出通知 → HUD
 - **输入**：WASD 移动、鼠标瞄准、左键射击、道具拾取
 - **摄像机**：跟随玩家
 
 #### SCENE_DEATH - 玩家死亡动画
-- **更新**：粒子、网格、屏幕震动（不调用 `gameUpdate()`）
-- **绘制**：黑色背景 → 网格 → 地图边框 → 粒子 → 白色闪光（前 0.5 秒）
-- **自动转换**：1.5 秒后 → SCENE_GAME_OVER
+- **更新**：粒子、网格、星空、屏幕震动（不调用 `gameUpdate()`）
+- **绘制**：星空 → 黑色背景 → 网格 → 地图边框 → 粒子 → 白色闪光（前 0.5 秒）
+- **自动转换**：1.5 秒后 → SCENE_GAME_OVER（同时插入排行榜、保存最佳纪录）
 - **音效**：播放 explosion.wav（第 1 秒内）
 - **摄像机**：跟随死亡位置
 
 #### SCENE_GAME_OVER - 结算画面
-- **更新**：网格、粒子
-- **绘制**：黑色背景 → 网格 → 粒子 → GAME OVER 文字 → 统计数据 → "PRESS R TO RESTART"（闪烁）
-- **输入**：R 键 → 检查并保存历史最高分/最长时间 → 重置游戏数据，切换到 SCENE_TITLE
-- **显示数据**：最终分数、存活时间、总击杀数、最高连击倍率
-- **存档逻辑**：按 R 时，如果 `score > bestScore` 或 `gameTime > bestTime`，调用 `GameLib::SaveInt/SaveFloat` 保存新纪录
-- **摄像机**：不更新（保持在死亡位置）
+- **更新**：网格、星空、粒子
+- **绘制**：星空 → 黑色背景 → 网格 → 粒子 → GAME OVER 文字 → 统计数据 → 死亡原因 → 弹出通知 → "PRESS SPACE FOR LEADERBOARD"（闪烁）
+- **输入**：Space 键 → 切换到 SCENE_LEADERBOARD
+- **显示数据**：最终分数、存活时间、总击杀数、最高连击倍率、死亡原因（敌人名+颜色+图标）
+- **存档逻辑**：排行榜插入和最佳纪录保存已在 DEATH→GAME_OVER 转换时完成
+- **摄像机**：保持在死亡位置
+
+#### SCENE_LEADERBOARD - 排行榜
+- **更新**：网格、星空
+- **绘制**：星空 → 网格 → 排行榜标题 → RANK/SCORE/KILLS/TIME 列头 → 10 行数据 → "PRESS SPACE TO RETURN"（闪烁）
+- **输入**：Space 键 → 切换到 SCENE_TITLE
+- **摄像机**：居中（`camX = (MAP_W - WIN_W) / 2, camY = (MAP_H - WIN_H) / 2`）
+- **高亮**：本次成绩行用金色显示（`lbHighlight` 索引）
 
 ### 5.3 场景切换时的初始化
 
-- **TITLE → COMBAT**：重置所有游戏数据（分数、连击、位置、敌人、子弹、粒子、网格）
-- **COMBAT → DEATH**：玩家死亡时触发（`playerAlive = false`）
-- **DEATH → GAME_OVER**：自动（1.5 秒后），播放 game_over.wav
-- **GAME_OVER → TITLE**：按 R 键，检查并保存历史最高分/最长时间 → 重置所有游戏数据 + 清除震动状态
+- **TITLE → COMBAT**：重置所有游戏数据（分数、连击、位置、敌人、子弹、粒子、网格、星空、生命、能量、弹出通知、成就标志、死亡原因）
+- **COMBAT → DEATH**：玩家最终死亡时触发（`playerAlive = false`，`lives <= 0`）
+- **DEATH → GAME_OVER**：自动（1.5 秒后），插入排行榜、保存最佳纪录、播放 game_over.wav
+- **GAME_OVER → LEADERBOARD**：按 Space 键
+- **LEADERBOARD → TITLE**：按 Space 键，重置所有游戏数据 + 清除震动状态
 
 ### 5.4 场景计时器
 
@@ -536,15 +605,17 @@ camY += (ty - camY) * 0.1f;
 
 ```
 1. Clear(COLOR_BLACK)
-2. 弹簧网格（gridDraw）
-3. 地图边框（drawMapBorder）
-4. 子弹（drawBullets）
-5. 敌人（drawEnemies）
-6. 玩家（drawPlayer，仅存活时）
-7. 道具（powerupsDraw）
-8. 粒子（particlesDraw）
-9. 浮动文字（floatTextsDraw）
-10. HUD（drawHUD）
+2. 星空（starsDraw）
+3. 弹簧网格（gridDraw）
+4. 地图边框（drawMapBorder）
+5. 子弹（drawBullets）
+6. 敌人（drawEnemies）
+7. 玩家（drawPlayer，仅存活时，含重生闪烁和能量金光）
+8. 道具（powerupsDraw，含 Nuke 和 Energy）
+9. 粒子（particlesDraw）
+10. 浮动文字（floatTextsDraw）
+11. 弹出通知（popupDraw）
+12. HUD（drawHUD，含生命和能量条）
 ```
 
 **特殊效果**：
@@ -630,11 +701,13 @@ while (!game.IsClosed()) {
 - [x] 清屏道具（Nuke，全屏敌人爆炸）
 - [x] 子弹命中火花特效（白色反弹粒子）
 - [x] 历史最高分/最长时间存档系统
-- [ ] 多命系统（3 命）
-- [ ] 能量道具（击杀敌人掉落，拾取后强化武器）
+- [x] 多命系统（3 命，重生无敌 2 秒，清除附近敌人）
+- [x] 能量道具（击杀掉落，5 发扇形散射，5 秒持续）
 - [ ] Boss 敌人（超大血量，特殊攻击模式）
-- [ ] 背景星空（静态粒子，增加画面层次）
-- [ ] 高分排行榜（多条目排名）
+- [x] 屏幕文字通知（Achievement Popup：连击/击杀/道具里程碑）
+- [x] 死亡原因提示（GAME_OVER 显示 "KILLED BY: [敌人名]" + 图标）
+- [x] 背景星空（两层漂移星点，远层 50 + 近层 30）
+- [x] 高分排行榜（Top 10，本地存档，GAME_OVER→Space→排行榜→Space→标题）
 - [ ] 多武器类型（散射、激光、导弹）
 - [ ] 移动端适配（虚拟摇杆 + 自动射击）
 
@@ -655,3 +728,9 @@ while (!game.IsClosed()) {
 | 2026-04-19 | 添加历史最高分/最长时间存档系统（GameLib Save/Load API） |
 | 2026-04-19 | HUD 顶部中央显示历史最高分（金色） |
 | 2026-04-19 | 标题画面底部灰色单行显示历史纪录 |
+| 2026-04-19 | 添加背景星空（两层漂移星点：远层 50 + 近层 30） |
+| 2026-04-19 | 添加能量道具 Energy（击杀掉落，5 发扇形散射，5 秒持续） |
+| 2026-04-19 | 添加屏幕文字通知 Achievement Popup（连击/击杀/道具里程碑） |
+| 2026-04-19 | 添加死亡原因提示（GAME_OVER 显示 "KILLED BY: [敌人名]" + 图标） |
+| 2026-04-19 | 添加多命系统（3 呞，重生无敌 2 秒，清除附近敌人） |
+| 2026-04-19 | 添加高分排行榜（Top 10，SCENE_LEADERBOARD，GAME_OVER→Space→排行榜→Space→标题） |

@@ -42,6 +42,18 @@
 #define SHOOT_RATE    0.12f
 #define COMBO_TIMEOUT 2.0f
 
+#define MAX_STARS_FAR   50
+#define MAX_STARS_NEAR  30
+#define ENERGY_DURATION      5.0f
+#define ENERGY_SHOOT_RATE    0.08f
+#define POPUP_LIFE      2.0f
+#define POPUP_GROW_TIME 0.2f
+#define POPUP_FADE_TIME 0.5f
+#define MAX_LIVES           3
+#define RESPAWN_INVINCIBLE  2.0f
+#define SPAWN_CLEAR_RADIUS  150.0f
+#define LB_SIZE            10
+
 // ============================================================
 // Structs
 // ============================================================
@@ -50,7 +62,10 @@ struct Bullet  { float x, y, vx, vy; bool active; };
 struct Enemy   { float x, y, vx, vy; int type; int hp; int maxHp; float r; float speed; bool active; float angle; };
 struct Particle{ float x, y, vx, vy; uint32_t color; float life; float maxLife; float sz; };
 struct FloatText { float x, y, vy; char text[16]; uint32_t color; float life; float maxLife; };
-struct PowerUp { float x, y, r; float life; float pulse; bool active; int type; }; // type 0 = nuke
+struct PowerUp { float x, y, r; float life; float pulse; bool active; int type; }; // type 0 = nuke, 1 = energy
+struct Star { float x, y; uint32_t color; float drift; float sz; };
+struct Popup { char text[32]; uint32_t color; float life; float maxLife; int scale; };
+struct LBEntry { int score; float time; int kills; int combo; };
 
 // ============================================================
 // Global State
@@ -64,12 +79,16 @@ static Enemy enemies[MAX_ENEMIES];
 static Particle particles[MAX_PARTICLES];
 static FloatText floatTexts[MAX_FLOAT_TEXTS];
 static PowerUp powerups[MAX_POWERUPS];
+static Star starsFar[MAX_STARS_FAR];
+static Star starsNear[MAX_STARS_NEAR];
+static LBEntry leaderboard[LB_SIZE];
 
 // Scene IDs (managed by GameLib.h SetScene)
 #define SCENE_TITLE     1
 #define SCENE_COMBAT    2
 #define SCENE_DEATH     3
 #define SCENE_GAME_OVER 4
+#define SCENE_LEADERBOARD 5
 
 static int score = 0, combo = 0, kills = 0;
 static float comboTimer = 0.0f;
@@ -88,6 +107,17 @@ static int shakeFrames = 0;
 static float shootTimer = 0.0f;
 static float spawnTimer = 0.0f;  // Enemy spawn timer
 static float powerupSpawnTimer = 0.0f;  // Powerup spawn timer
+
+static float energyTimer = 0.0f;
+static bool  energyActive = false;
+static Popup popup;
+static bool combo5Shown = false, combo10Shown = false;
+static bool kills50Shown = false, kills100Shown = false, kills200Shown = false;
+static int killedByType = -1;
+static int   lives = MAX_LIVES;
+static float respawnTimer = 0.0f;
+static bool  respawnInvincible = false;
+static int lbHighlight = -1;
 
 static struct {
     const char *shoot[4];    // shoot-01.wav ~ shoot-04.wav
@@ -111,6 +141,16 @@ static float dist(float x1, float y1, float x2, float y2) {
     return (float)sqrt(dx * dx + dy * dy);
 }
 static void clamp(float &v, float lo, float hi) { if (v < lo) v = lo; if (v > hi) v = hi; }
+
+static const char *enemyTypeName(int type) {
+    switch (type) {
+        case 0: return "SWARM";
+        case 1: return "CHASER";
+        case 2: return "BOUNCER";
+        case 3: return "TANK";
+        default: return "UNKNOWN";
+    }
+}
 
 // ============================================================
 // Floating Score Texts
@@ -154,6 +194,60 @@ static void floatTextsDraw(GameLib &g) {
 }
 
 // ============================================================
+// Starfield
+// ============================================================
+static void starsInit() {
+    for (int i = 0; i < MAX_STARS_FAR; i++) {
+        Star &s = starsFar[i];
+        s.x = (float)(rand() % MAP_W);
+        s.y = (float)(rand() % MAP_H);
+        int colorType = rand() % 3;
+        int a = 30 + rand() % 30;
+        if (colorType == 0) s.color = COLOR_ARGB(a, 200, 200, 255);
+        else if (colorType == 1) s.color = COLOR_ARGB(a, 180, 220, 255);
+        else s.color = COLOR_ARGB(a, 220, 220, 220);
+        s.drift = (float)(5 + rand() % 5);
+        s.sz = 1.0f + (float)(rand() % 2);
+    }
+    for (int i = 0; i < MAX_STARS_NEAR; i++) {
+        Star &s = starsNear[i];
+        s.x = (float)(rand() % MAP_W);
+        s.y = (float)(rand() % MAP_H);
+        int colorType = rand() % 3;
+        int a = 60 + rand() % 40;
+        if (colorType == 0) s.color = COLOR_ARGB(a, 200, 200, 255);
+        else if (colorType == 1) s.color = COLOR_ARGB(a, 180, 220, 255);
+        else s.color = COLOR_ARGB(a, 220, 220, 220);
+        s.drift = (float)(15 + rand() % 10);
+        s.sz = 2.0f + (float)(rand() % 2);
+    }
+}
+
+static void starsUpdate(float dt) {
+    for (int i = 0; i < MAX_STARS_FAR; i++) {
+        starsFar[i].y += starsFar[i].drift * dt;
+        if (starsFar[i].y > MAP_H) { starsFar[i].y = 0; starsFar[i].x = (float)(rand() % MAP_W); }
+    }
+    for (int i = 0; i < MAX_STARS_NEAR; i++) {
+        starsNear[i].y += starsNear[i].drift * dt;
+        if (starsNear[i].y > MAP_H) { starsNear[i].y = 0; starsNear[i].x = (float)(rand() % MAP_W); }
+    }
+}
+
+static void starsDraw(GameLib &g) {
+    for (int i = 0; i < MAX_STARS_FAR; i++) {
+        int sx = (int)(starsFar[i].x - camX + shakeX);
+        int sy = (int)(starsFar[i].y - camY + shakeY);
+        g.FillCircle(sx, sy, (int)starsFar[i].sz, starsFar[i].color);
+    }
+    for (int i = 0; i < MAX_STARS_NEAR; i++) {
+        int sx = (int)(starsNear[i].x - camX + shakeX);
+        int sy = (int)(starsNear[i].y - camY + shakeY);
+        g.FillCircle(sx, sy, (int)starsNear[i].sz, starsNear[i].color);
+    }
+}
+
+// ============================================================
 // PowerUps
 // ============================================================
 static void spawnPowerUp(float x, float y, int type) {
@@ -186,8 +280,14 @@ static void powerupsDraw(GameLib &g) {
         int pr = (int)(p.r * pulseScale);
 
         // Nuke powerup: bright cyan diamond with glow
-        uint32_t core = COLOR_ARGB(255, 0, 255, 255);
-        uint32_t glow = COLOR_ARGB(80, 0, 200, 255);
+        uint32_t core, glow;
+        if (p.type == 0) {
+            core = COLOR_ARGB(255, 0, 255, 255);
+            glow = COLOR_ARGB(80, 0, 200, 255);
+        } else {
+            core = COLOR_ARGB(255, 255, 200, 50);
+            glow = COLOR_ARGB(80, 255, 150, 0);
+        }
         g.FillCircle(sx, sy, pr * 2, glow);
         // Diamond shape
         int pts[8] = {
@@ -468,8 +568,118 @@ static void shakeUpdate() {
     }
 }
 
+// ============================================================
+// Achievement Popup
+// ============================================================
+static void showPopup(const char *text, uint32_t color, int scale) {
+    strncpy(popup.text, text, sizeof(popup.text) - 1);
+    popup.text[sizeof(popup.text) - 1] = '\0';
+    popup.color = color;
+    popup.life = POPUP_LIFE;
+    popup.maxLife = POPUP_LIFE;
+    popup.scale = scale;
+}
+
+static void popupUpdate(float dt) {
+    if (popup.life > 0) {
+        popup.life -= dt;
+        if (popup.life < 0) popup.life = 0;
+    }
+}
+
+static void popupDraw(GameLib &g) {
+    if (popup.life <= 0) return;
+    float elapsed = popup.maxLife - popup.life;
+    int currentScale;
+    if (elapsed < POPUP_GROW_TIME) {
+        currentScale = 1 + (int)((elapsed / POPUP_GROW_TIME) * (popup.scale - 1));
+        if (currentScale < 1) currentScale = 1;
+    } else {
+        currentScale = popup.scale;
+    }
+    uint32_t drawColor = popup.color;
+    if (popup.life < POPUP_FADE_TIME) {
+        float alpha = popup.life / POPUP_FADE_TIME;
+        drawColor = COLOR_ARGB((uint32_t)(alpha * 255), COLOR_GET_R(popup.color), COLOR_GET_G(popup.color), COLOR_GET_B(popup.color));
+    }
+    int tw = (int)strlen(popup.text) * 8 * currentScale;
+    g.DrawTextScale(WIN_W / 2 - tw / 2, WIN_H / 2 - 20, popup.text, drawColor, currentScale);
+}
+
+// ============================================================
+// Leaderboard
+// ============================================================
+static void lbLoad() {
+    for (int i = 0; i < LB_SIZE; i++) {
+        char key[32];
+        sprintf(key, "lb_score%d", i);
+        leaderboard[i].score = GameLib::LoadInt(SAVE_FILE, key, 0);
+        sprintf(key, "lb_time%d", i);
+        leaderboard[i].time = GameLib::LoadFloat(SAVE_FILE, key, 0.0f);
+        sprintf(key, "lb_kills%d", i);
+        leaderboard[i].kills = GameLib::LoadInt(SAVE_FILE, key, 0);
+        sprintf(key, "lb_combo%d", i);
+        leaderboard[i].combo = GameLib::LoadInt(SAVE_FILE, key, 0);
+    }
+}
+
+static void lbSave() {
+    for (int i = 0; i < LB_SIZE; i++) {
+        char key[32];
+        sprintf(key, "lb_score%d", i);
+        GameLib::SaveInt(SAVE_FILE, key, leaderboard[i].score);
+        sprintf(key, "lb_time%d", i);
+        GameLib::SaveFloat(SAVE_FILE, key, leaderboard[i].time);
+        sprintf(key, "lb_kills%d", i);
+        GameLib::SaveInt(SAVE_FILE, key, leaderboard[i].kills);
+        sprintf(key, "lb_combo%d", i);
+        GameLib::SaveInt(SAVE_FILE, key, leaderboard[i].combo);
+    }
+}
+
+static int lbInsert(int newScore, float newTime, int newKills, int newCombo) {
+    int pos = -1;
+    for (int i = 0; i < LB_SIZE; i++) {
+        if (newScore > leaderboard[i].score) { pos = i; break; }
+    }
+    if (pos < 0) return -1;
+    for (int i = LB_SIZE - 1; i > pos; i--) {
+        leaderboard[i] = leaderboard[i - 1];
+    }
+    leaderboard[pos].score = newScore;
+    leaderboard[pos].time = newTime;
+    leaderboard[pos].kills = newKills;
+    leaderboard[pos].combo = newCombo;
+    lbSave();
+    return pos;
+}
+
+static void lbDraw(GameLib &g) {
+    const char *title = "LEADERBOARD";
+    int tw = (int)strlen(title) * 8 * 3;
+    g.DrawTextScale(WIN_W / 2 - tw / 2, 30, title, COLOR_CYAN, 3);
+    int y = 80;
+    g.DrawText(60, y, "RANK", COLOR_LIGHT_GRAY);
+    g.DrawText(120, y, "SCORE", COLOR_LIGHT_GRAY);
+    g.DrawText(260, y, "KILLS", COLOR_LIGHT_GRAY);
+    g.DrawText(380, y, "TIME", COLOR_LIGHT_GRAY);
+    y += 25;
+    for (int i = 0; i < LB_SIZE; i++) {
+        if (leaderboard[i].score == 0) continue;
+        uint32_t rowColor = (i == lbHighlight) ? COLOR_GOLD : COLOR_WHITE;
+        g.DrawPrintf(60, y, rowColor, "#%d", i + 1);
+        g.DrawPrintf(120, y, rowColor, "%d", leaderboard[i].score);
+        g.DrawPrintf(260, y, rowColor, "%d", leaderboard[i].kills);
+        int m = (int)leaderboard[i].time / 60;
+        int s = (int)leaderboard[i].time % 60;
+        g.DrawPrintf(380, y, rowColor, "%d:%02d", m, s);
+        y += 22;
+    }
+}
+
 // Trigger nuke: kill all enemies with explosion
 static void triggerNuke(GameLib &g) {
+    showPopup("NUKE ACTIVATED!", COLOR_CYAN, 3);
     g.PlayWAV(pickRandom(sounds.explosion, 8));
     shake(8, 20);
     gridImpulse(px, py, 600, 400);
@@ -506,12 +716,17 @@ static void cameraUpdate() {
 // Drawing Helpers
 // ============================================================
 static void drawPlayer(GameLib &g) {
+    if (respawnInvincible && (int)(g.GetTime() * 8) % 2 == 0) return;
     int sx = (int)(px - camX + shakeX), sy = (int)(py - camY + shakeY);
     float a = pAngle;
     uint32_t glow = COLOR_ARGB(60, 0, 255, 255);
     uint32_t core = COLOR_ARGB(240, 0, 255, 255);
     // Glow
     g.FillCircle(sx, sy, 20, glow);
+    // Energy golden glow
+    if (energyActive) {
+        g.FillCircle(sx, sy, 25, COLOR_ARGB(80, 255, 200, 50));
+    }
     // Ship shape (pointed toward mouse)
     float verts[6];
     verts[0] = sx + (float)cos(a) * 18;
@@ -601,6 +816,18 @@ static void drawHUD(GameLib &g) {
     int minutes = (int)gameTime / 60;
     int seconds = (int)gameTime % 60;
     g.DrawPrintf(WIN_W - 100, 10, COLOR_SKY_BLUE, "TIME %d:%02d", minutes, seconds);
+
+    // Lives
+    g.DrawPrintf(10, WIN_H - 20, COLOR_WHITE, "LIVES: %d", lives);
+
+    // Energy bar
+    if (energyActive) {
+        float ratio = energyTimer / ENERGY_DURATION;
+        int barW = 80, barH = 6;
+        int barX = WIN_W / 2 - barW / 2, barY = 50;
+        g.FillRect(barX, barY, (int)(barW * ratio), barH, COLOR_ARGB(200, 255, 200, 50));
+        g.DrawRect(barX, barY, barW, barH, COLOR_ARGB(150, 255, 150, 0));
+    }
 }
 
 static void drawTextCentered(GameLib &g, const char *text, int y, uint32_t color, float scale) {
@@ -632,20 +859,26 @@ static void gameUpdate(GameLib &g, float dt) {
     // Shooting
     if (playerAlive && g.GetScene() == SCENE_COMBAT) {
         shootTimer += dt;
-        if (g.IsMouseDown(MOUSE_LEFT) && shootTimer >= SHOOT_RATE) {
+        float rate = energyActive ? ENERGY_SHOOT_RATE : SHOOT_RATE;
+        if (g.IsMouseDown(MOUSE_LEFT) && shootTimer >= rate) {
             shootTimer = 0;
-            for (int i = 0; i < MAX_BULLETS; i++) {
-                if (!bullets[i].active) {
-                    bullets[i].active = true;
-                    bullets[i].x = px + (float)cos(pAngle) * 15;
-                    bullets[i].y = py + (float)sin(pAngle) * 15;
-                    bullets[i].vx = (float)cos(pAngle) * BULLET_SPEED;
-                    bullets[i].vy = (float)sin(pAngle) * BULLET_SPEED;
-                    // Play random shoot sound
-                    g.PlayWAV(pickRandom(sounds.shoot, 4));
-                    break;
+            int bulletCount = energyActive ? 5 : 1;
+            float spreadAngles[] = { -15.0f, -7.0f, 0.0f, 7.0f, 15.0f };
+            for (int b = 0; b < bulletCount; b++) {
+                float angle = pAngle;
+                if (energyActive) angle += spreadAngles[b] * (float)M_PI / 180.0f;
+                for (int i = 0; i < MAX_BULLETS; i++) {
+                    if (!bullets[i].active) {
+                        bullets[i].active = true;
+                        bullets[i].x = px + (float)cos(angle) * 15;
+                        bullets[i].y = py + (float)sin(angle) * 15;
+                        bullets[i].vx = (float)cos(angle) * BULLET_SPEED;
+                        bullets[i].vy = (float)sin(angle) * BULLET_SPEED;
+                        break;
+                    }
                 }
             }
+            g.PlayWAV(pickRandom(sounds.shoot, 4));
         }
     }
 
@@ -706,6 +939,19 @@ static void gameUpdate(GameLib &g, float dt) {
                         sprintf(buf, "+%d", earned);
                         spawnFloatText(enemies[j].x, enemies[j].y - 10, buf, COLOR_YELLOW);
 
+                        // Energy drop chance
+                        int dropChance[] = { 20, 30, 35, 50 };
+                        if (rand() % 100 < dropChance[enemies[j].type]) {
+                            spawnPowerUp(enemies[j].x, enemies[j].y, 1);
+                        }
+
+                        // Achievement popups
+                        if (combo >= 5 && !combo5Shown) { combo5Shown = true; showPopup("x5 COMBO!", COLOR_YELLOW, 3); shake(4, 10); }
+                        if (combo >= 10 && !combo10Shown) { combo10Shown = true; showPopup("x10 COMBO!", COLOR_ARGB(255, 255, 200, 0), 3); shake(6, 15); }
+                        if (totalKills == 50 && !kills50Shown) { kills50Shown = true; showPopup("50 KILLS!", COLOR_GREEN, 3); shake(3, 8); }
+                        if (totalKills == 100 && !kills100Shown) { kills100Shown = true; showPopup("100 KILLS!", COLOR_ARGB(255, 80, 255, 80), 3); shake(5, 12); }
+                        if (totalKills == 200 && !kills200Shown) { kills200Shown = true; showPopup("200 KILLS!", COLOR_ARGB(255, 160, 60, 220), 3); shake(7, 15); }
+
                         // Tank splits
                         if (enemies[j].type == 3) {
                             for (int k = 0; k < 3; k++) {
@@ -722,19 +968,45 @@ static void gameUpdate(GameLib &g, float dt) {
             }
         }
 
-        // Player-enemy collision (skip if invincible)
-        if (!invincible) {
+        // Player-enemy collision (skip if invincible or respawn invincible)
+        if (!invincible && !respawnInvincible) {
             for (int i = 0; i < MAX_ENEMIES; i++) {
                 if (!enemies[i].active) continue;
                 if (dist(px, py, enemies[i].x, enemies[i].y) < enemies[i].r + 8) {
-                    playerAlive = false;
-                    g.SetScene(SCENE_DEATH);
-                    for (int j = 0; j < MAX_ENEMIES; j++) enemies[j].active = false;
-                    spawnExplosion(px, py, COLOR_WHITE, 80);
-                    spawnExplosion(px, py, COLOR_CYAN, 60);
-                    spawnExplosion(px, py, COLOR_ARGB(255, 255, 200, 100), 40);
-                    gridImpulse(px, py, 500, 500);
-                    shake(10, 25);
+                    killedByType = enemies[i].type;
+                    lives--;
+                    if (lives <= 0) {
+                        // Final death
+                        playerAlive = false;
+                        g.SetScene(SCENE_DEATH);
+                        for (int j = 0; j < MAX_ENEMIES; j++) enemies[j].active = false;
+                        spawnExplosion(px, py, COLOR_WHITE, 80);
+                        spawnExplosion(px, py, COLOR_CYAN, 60);
+                        spawnExplosion(px, py, COLOR_ARGB(255, 255, 200, 100), 40);
+                        gridImpulse(px, py, 500, 500);
+                        shake(10, 25);
+                    } else {
+                        // Lose a life: mini-death + respawn
+                        spawnExplosion(px, py, COLOR_WHITE, 30);
+                        spawnExplosion(px, py, COLOR_CYAN, 20);
+                        gridImpulse(px, py, 200, 200);
+                        shake(5, 10);
+                        g.PlayWAV(pickRandom(sounds.explosion, 8));
+                        px = MAP_W / 2.0f; py = MAP_H / 2.0f;
+                        camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
+                        // Clear nearby enemies
+                        for (int j = 0; j < MAX_ENEMIES; j++) {
+                            if (enemies[j].active && dist(px, py, enemies[j].x, enemies[j].y) < SPAWN_CLEAR_RADIUS) {
+                                spawnExplosion(enemies[j].x, enemies[j].y, enemyColor(enemies[j].type), 8);
+                                enemies[j].active = false;
+                            }
+                        }
+                        respawnInvincible = true;
+                        respawnTimer = RESPAWN_INVINCIBLE;
+                        energyActive = false;
+                        energyTimer = 0;
+                        for (int j = 0; j < MAX_BULLETS; j++) bullets[j].active = false;
+                    }
                     break;
                 }
             }
@@ -748,6 +1020,11 @@ static void gameUpdate(GameLib &g, float dt) {
                     // Pick up powerup
                     if (powerups[i].type == 0) {
                         triggerNuke(g);
+                    } else if (powerups[i].type == 1) {
+                        energyActive = true;
+                        energyTimer = ENERGY_DURATION;
+                        showPopup("SPREAD SHOT!", COLOR_ARGB(255, 255, 200, 50), 3);
+                        shake(3, 8);
                     }
                     powerups[i].active = false;
                 }
@@ -761,14 +1038,32 @@ static void gameUpdate(GameLib &g, float dt) {
     // Floating texts update
     floatTextsUpdate(dt);
 
+    // Popup update
+    popupUpdate(dt);
+
     // Powerups update
     powerupsUpdate(dt);
 
     // Grid update
     gridUpdate(dt);
 
+    // Stars update
+    starsUpdate(dt);
+
     // Combo timer
     if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 1; }
+
+    // Energy timer
+    if (energyActive) {
+        energyTimer -= dt;
+        if (energyTimer <= 0) { energyActive = false; energyTimer = 0; }
+    }
+
+    // Respawn invincibility timer
+    if (respawnInvincible) {
+        respawnTimer -= dt;
+        if (respawnTimer <= 0) { respawnInvincible = false; respawnTimer = 0; }
+    }
 
     // Shake update
     shakeUpdate();
@@ -837,6 +1132,7 @@ int main() {
     // Load all-time records from save file (defaults to 0 if no save)
     bestScore = GameLib::LoadInt(SAVE_FILE, "bestScore", 0);
     bestTime = GameLib::LoadFloat(SAVE_FILE, "bestTime", 0.0f);
+    lbLoad();
 
     // Resolve sound paths - use actual files in assets/ directory
     sounds.shoot[0] = "assets/shoot-01.wav";
@@ -870,9 +1166,12 @@ int main() {
     // Init
     game.SetScene(SCENE_TITLE);
     gridInit();
+    starsInit();
     for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
     for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
     for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
+    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
+    for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
 
     while (!game.IsClosed()) {
         double dt = game.GetDeltaTime();
@@ -890,6 +1189,7 @@ int main() {
         switch (game.GetScene()) {
             case SCENE_TITLE: {
                 game.Clear(COLOR_BLACK);
+                starsDraw(game);
                 gridUpdate(fdt);
                 gridDraw(game);
 
@@ -911,6 +1211,7 @@ int main() {
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 15, "Mouse : Aim", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 30, "Left Click : Shoot", COLOR_DARK_GRAY);
                 game.DrawText(WIN_W / 2 - 120, ctrlY + 45, "Enter : Start Game", COLOR_DARK_GRAY);
+                game.DrawText(WIN_W / 2 - 120, ctrlY + 60, "L : Leaderboard", COLOR_DARK_GRAY);
 
                 // Best records at bottom (single line)
                 int bestMin = (int)bestTime / 60;
@@ -925,7 +1226,18 @@ int main() {
                     camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
                     playerAlive = true;
                     invincible = false;
+                    lives = MAX_LIVES;
+                    respawnInvincible = false;
+                    respawnTimer = 0.0f;
+                    energyActive = false;
+                    energyTimer = 0.0f;
+                    killedByType = -1;
+                    combo5Shown = false; combo10Shown = false;
+                    kills50Shown = false; kills100Shown = false; kills200Shown = false;
+                    popup.life = 0;
+                    lbHighlight = -1;
                     gridInit();
+                    starsInit();
                     for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
                     for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
                     for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
@@ -934,12 +1246,18 @@ int main() {
                     game.SetScene(SCENE_COMBAT);
                     game.PlayWAV(sounds.noteHigh);
                 }
+
+                if (game.IsKeyPressed(KEY_L)) {
+                    lbHighlight = -1;
+                    game.SetScene(SCENE_LEADERBOARD);
+                }
                 break;
             }
 
             case SCENE_COMBAT: {
                 gameUpdate(game, fdt);
                 game.Clear(COLOR_BLACK);
+                starsDraw(game);
                 gridDraw(game);
                 drawMapBorder(game);
                 drawBullets(game);
@@ -948,6 +1266,7 @@ int main() {
                 powerupsDraw(game);
                 particlesDraw(game);
                 floatTextsDraw(game);
+                popupDraw(game);
                 drawHUD(game);
                 break;
             }
@@ -958,9 +1277,11 @@ int main() {
                 deathTimer += fdt;
                 particlesUpdate(fdt);
                 gridUpdate(fdt);
+                starsUpdate(fdt);
                 shakeUpdate();
 
                 game.Clear(COLOR_BLACK);
+                starsDraw(game);
                 gridDraw(game);
                 drawMapBorder(game);
                 particlesDraw(game);
@@ -975,6 +1296,16 @@ int main() {
                 }
 
                 if (deathTimer > 1.5f) {
+                    // Insert score into leaderboard & save best records
+                    lbHighlight = lbInsert(score, gameTime, totalKills, highestCombo);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        GameLib::SaveInt(SAVE_FILE, "bestScore", bestScore);
+                    }
+                    if (gameTime > bestTime) {
+                        bestTime = gameTime;
+                        GameLib::SaveFloat(SAVE_FILE, "bestTime", bestTime);
+                    }
                     game.SetScene(SCENE_GAME_OVER);
                     deathTimer = 0;
                     game.PlayWAV(sounds.gameOver);
@@ -987,9 +1318,11 @@ int main() {
                 if (game.IsSceneChanged()) goTimer = 0;
                 goTimer += fdt;
                 gridUpdate(fdt);
+                starsUpdate(fdt);
                 particlesUpdate(fdt);
 
                 game.Clear(COLOR_BLACK);
+                starsDraw(game);
                 gridDraw(game);
                 particlesDraw(game);
 
@@ -998,45 +1331,97 @@ int main() {
                 char buf[64];
                 sprintf(buf, "FINAL SCORE: %d", score);
                 drawTextCentered(game, buf, WIN_H / 2 - 10, COLOR_WHITE, 1);
-                
+
                 int minutes = (int)gameTime / 60;
                 int seconds = (int)gameTime % 60;
                 sprintf(buf, "SURVIVED: %d:%02d", minutes, seconds);
                 drawTextCentered(game, buf, WIN_H / 2 + 15, COLOR_WHITE, 1);
-                
+
                 sprintf(buf, "TOTAL KILLS: %d", totalKills);
                 drawTextCentered(game, buf, WIN_H / 2 + 40, COLOR_WHITE, 1);
                 sprintf(buf, "MAX COMBO: x%d", highestCombo);
                 drawTextCentered(game, buf, WIN_H / 2 + 65, COLOR_YELLOW, 1);
 
+                // Death cause
+                if (killedByType >= 0 && killedByType <= 3) {
+                    uint32_t kc = enemyColor(killedByType);
+                    sprintf(buf, "KILLED BY: %s", enemyTypeName(killedByType));
+                    drawTextCentered(game, buf, WIN_H / 2 + 90, kc, 1);
+                    // Small icon next to name
+                    int iconX = WIN_W / 2 - (int)(strlen(buf) * 8) / 2 - 20;
+                    int iconY = WIN_H / 2 + 93;
+                    switch (killedByType) {
+                        case 0: game.FillCircle(iconX, iconY, 6, kc); break;
+                        case 1:
+                            for (int j = 0; j < 3; j++) {
+                                float a1 = j * (float)(2.0 * M_PI / 3);
+                                float a2 = (j + 1) * (float)(2.0 * M_PI / 3);
+                                game.DrawLine(iconX + (int)(cos(a1) * 8), iconY + (int)(sin(a1) * 8),
+                                              iconX + (int)(cos(a2) * 8), iconY + (int)(sin(a2) * 8), kc);
+                            }
+                            break;
+                        case 2:
+                            for (int j = 0; j < 4; j++) {
+                                float a1 = (float)M_PI / 4 + j * (float)(M_PI / 2);
+                                float a2 = (float)M_PI / 4 + (j + 1) * (float)(M_PI / 2);
+                                game.DrawLine(iconX + (int)(cos(a1) * 8), iconY + (int)(sin(a1) * 8),
+                                              iconX + (int)(cos(a2) * 8), iconY + (int)(sin(a2) * 8), kc);
+                            }
+                            break;
+                        case 3: game.FillCircle(iconX, iconY, 10, kc); game.DrawCircle(iconX, iconY, 5, COLOR_ARGB(200, 220, 120, 255)); break;
+                    }
+                }
+
+                popupDraw(game);
+
                 if (goTimer > 2.0f) {
                     if ((int)(game.GetTime() * 2) % 2 == 0) {
-                        drawTextCentered(game, "PRESS R TO RESTART", WIN_H / 2 + 110, COLOR_LIGHT_GRAY, 1);
+                        drawTextCentered(game, "PRESS SPACE FOR LEADERBOARD", WIN_H / 2 + 115, COLOR_LIGHT_GRAY, 1);
                     }
-                    if (game.IsKeyPressed(KEY_R)) {
-                        // Save new records if beaten
-                        if (score > bestScore) {
-                            bestScore = score;
-                            GameLib::SaveInt(SAVE_FILE, "bestScore", bestScore);
-                        }
-                        if (gameTime > bestTime) {
-                            bestTime = gameTime;
-                            GameLib::SaveFloat(SAVE_FILE, "bestTime", bestTime);
-                        }
-
-                        game.SetScene(SCENE_TITLE);
+                    if (game.IsKeyPressed(KEY_SPACE)) {
+                        game.SetScene(SCENE_LEADERBOARD);
                         goTimer = 0;
-                        gridInit();
-                        for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
-                        for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
-                        for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
-                        for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
-                        for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
-                        playerAlive = true;
-                        px = MAP_W / 2.0f; py = MAP_H / 2.0f;
-                        camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
-                        shakeAmt = 0; shakeX = 0; shakeY = 0; shakeFrames = 0;
                     }
+                }
+                break;
+            }
+
+            case SCENE_LEADERBOARD: {
+                static float lbTimer = 0;
+                if (game.IsSceneChanged()) {
+                    lbTimer = 0;
+                    camX = (MAP_W - WIN_W) / 2.0f;
+                    camY = (MAP_H - WIN_H) / 2.0f;
+                }
+                lbTimer += fdt;
+                gridUpdate(fdt);
+                starsUpdate(fdt);
+
+                game.Clear(COLOR_BLACK);
+                starsDraw(game);
+                gridDraw(game);
+
+                lbDraw(game);
+
+                if (lbTimer > 1.0f) {
+                    if ((int)(game.GetTime() * 2) % 2 == 0) {
+                        drawTextCentered(game, "PRESS SPACE TO RETURN", WIN_H - 40, COLOR_LIGHT_GRAY, 1);
+                    }
+                }
+
+                if (game.IsKeyPressed(KEY_SPACE)) {
+                    game.SetScene(SCENE_TITLE);
+                    lbTimer = 0;
+                    gridInit();
+                    for (int i = 0; i < MAX_ENEMIES; i++) enemies[i].active = false;
+                    for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
+                    for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
+                    for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
+                    for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
+                    playerAlive = true;
+                    px = MAP_W / 2.0f; py = MAP_H / 2.0f;
+                    camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
+                    shakeAmt = 0; shakeX = 0; shakeY = 0; shakeFrames = 0;
                 }
                 break;
             }
