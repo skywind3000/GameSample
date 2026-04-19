@@ -67,6 +67,19 @@ struct Star { float x, y; uint32_t color; float drift; float sz; };
 struct Popup { char text[32]; uint32_t color; float life; float maxLife; int scale; };
 struct LBEntry { int score; float time; int kills; int combo; };
 
+#define MAX_BLACK_HOLES 2
+struct BlackHole {
+    float x, y;
+    float radius;
+    float pullStrength;
+    float life;
+    int absorbed;
+    bool active;
+    float pulse;
+    bool exploding;
+    float explodeTimer;
+};
+
 // ============================================================
 // Global State
 // ============================================================
@@ -107,6 +120,14 @@ static float powerupSpawnTimer = 0.0f;  // Powerup spawn timer
 static float shakeAmt = 0.0f, shakeX = 0.0f, shakeY = 0.0f;
 static int shakeFrames = 0;
 static float energyTimer = 0.0f;
+
+// -- Events --
+static float jackTimer = 0.0f;
+static bool jackActive = false;
+static float jackSpawnTimer = 0.0f;
+static int jackCount = 0;
+static int jackTotal = 0;
+static float bhSpawnTimer = 0.0f;
 static bool  energyActive = false;
 
 // -- Nuke FX --
@@ -134,6 +155,7 @@ static GridPt grid[GRID_ROWS][GRID_COLS];
 static Bullet bullets[MAX_BULLETS];
 static Enemy enemies[MAX_ENEMIES];
 static Particle particles[MAX_PARTICLES];
+static BlackHole blackHoles[MAX_BLACK_HOLES];
 static FloatText floatTexts[MAX_FLOAT_TEXTS];
 static PowerUp powerups[MAX_POWERUPS];
 static Star starsFar[MAX_STARS_FAR];
@@ -193,6 +215,7 @@ static void showPopup(const char *text, uint32_t color, int scale);
 static void spawnExplosion(float x, float y, uint32_t color, int count);
 static void spawnFloatText(float x, float y, const char *text, uint32_t color);
 static void spawnPowerUp(float x, float y, int type);
+static void spawnEnemy(int type, float x, float y);
 
 // ============================================================
 // Init & Reset
@@ -227,6 +250,9 @@ static void resetGame() {
     for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0;
     for (int i = 0; i < MAX_FLOAT_TEXTS; i++) floatTexts[i].life = 0;
     for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = false;
+    for (int i = 0; i < MAX_BLACK_HOLES; i++) blackHoles[i].active = false;
+    jackTimer = 0; jackActive = false; jackCount = 0; jackTotal = 0;
+    bhSpawnTimer = 0;
 }
 
 // ============================================================
@@ -524,6 +550,110 @@ static void powerupsDraw(GameLib &g) {
         if (p.life < 3.0f && (int)(p.pulse * 2) % 2 == 0) {
             g.FillCircle(sx, sy, pr * 2, COLOR_ARGB(40, 255, 255, 255));
         }
+    }
+}
+
+// ============================================================
+// Black Hole System
+// ============================================================
+static void blackHolesUpdate(float dt) {
+    for (int i = 0; i < MAX_BLACK_HOLES; i++) {
+        if (!blackHoles[i].active) continue;
+        BlackHole &bh = blackHoles[i];
+
+        if (bh.exploding) {
+            bh.explodeTimer += dt;
+            if (bh.explodeTimer >= 0.5f) {
+                bh.active = false;
+                continue;
+            }
+            continue;
+        }
+
+        bh.pulse += dt * 3.0f;
+        bh.life -= dt;
+        bh.radius = 100.0f + bh.absorbed * 8.0f;
+        if (bh.radius > 180.0f) bh.radius = 180.0f;
+
+        // Pull enemies toward BH
+        for (int j = 0; j < MAX_ENEMIES; j++) {
+            if (!enemies[j].active) continue;
+            Enemy &e = enemies[j];
+            float dx = bh.x - e.x, dy = bh.y - e.y;
+            float d = dist(e.x, e.y, bh.x, bh.y);
+            if (d < bh.radius && d > 1) {
+                e.vx += (dx / d) * bh.pullStrength * dt;
+                e.vy += (dy / d) * bh.pullStrength * dt;
+            }
+            // Absorb: enemy close to BH core
+            if (d < 20.0f) {
+                bh.absorbed++;
+                int pts[5] = { 50, 100, 150, 300, 200 };
+                int earned = pts[e.type] * combo;
+                score += earned;
+                combo++; comboTimer = COMBO_TIMEOUT;
+                if (combo > highestCombo) highestCombo = combo;
+                spawnExplosion(e.x, e.y, enemyColor(e.type), 8);
+                char buf[16];
+                sprintf(buf, "+%d", earned);
+                spawnFloatText(e.x, e.y - 10, buf, COLOR_YELLOW);
+                e.active = false;
+            }
+        }
+
+        // Explode if absorbed enough
+        if (bh.absorbed >= 10) {
+            bh.exploding = true;
+            bh.explodeTimer = 0;
+            shake(5, 12);
+            spawnExplosion(bh.x, bh.y, COLOR_ARGB(255, 160, 60, 220), 30);
+            showPopup("BLACK HOLE BURST!", COLOR_ARGB(255, 160, 60, 220), 3);
+            gridImpulse(bh.x, bh.y, 300, 200);
+            // Release 8 small enemies from BH
+            for (int k = 0; k < 8; k++) {
+                float a = (float)(k * 45) * (float)M_PI / 180.0f;
+                spawnEnemy(0, bh.x + (float)cos(a) * 20, bh.y + (float)sin(a) * 20);
+            }
+        }
+
+        // Quiet disappear if life runs out
+        if (bh.life <= 0 && !bh.exploding) {
+            spawnExplosion(bh.x, bh.y, COLOR_ARGB(255, 100, 50, 150), 10);
+            bh.active = false;
+        }
+    }
+}
+
+static void blackHolesDraw(GameLib &g) {
+    for (int i = 0; i < MAX_BLACK_HOLES; i++) {
+        if (!blackHoles[i].active) continue;
+        BlackHole &bh = blackHoles[i];
+        int sx = (int)(bh.x - camX + shakeX), sy = (int)(bh.y - camY + shakeY);
+
+        if (bh.exploding) {
+            float expandProgress = bh.explodeTimer / 0.5f;
+            int waveR = (int)(expandProgress * 400);
+            int waveAlpha = (int)(200 * (1.0f - expandProgress));
+            g.DrawCircle(sx, sy, waveR, COLOR_ARGB(waveAlpha, 160, 60, 220));
+            g.DrawCircle(sx, sy, waveR / 2, COLOR_ARGB(waveAlpha / 2, 220, 150, 255));
+            continue;
+        }
+
+        // Gravity range ring (pulsing)
+        float pulseScale = (float)sin(bh.pulse) * 0.1f + 1.0f;
+        int ringR = (int)(bh.radius * pulseScale);
+        g.DrawCircle(sx, sy, ringR, COLOR_ARGB(40, 160, 60, 220));
+
+        // Core
+        int coreR = 15 + bh.absorbed * 2;
+        if (coreR > 35) coreR = 35;
+        g.FillCircle(sx, sy, coreR, COLOR_ARGB(200, 120, 40, 160));
+        g.FillCircle(sx, sy, coreR + 5, COLOR_ARGB(80, 160, 60, 220));
+
+        // Center bright dot
+        int dotAlpha = 100 + bh.absorbed * 15;
+        if (dotAlpha > 255) dotAlpha = 255;
+        g.FillCircle(sx, sy, 3, COLOR_ARGB(dotAlpha, 220, 150, 255));
     }
 }
 
@@ -1006,6 +1136,19 @@ static void updatePlayer(GameLib &g, float dt) {
     clamp(px, 20, MAP_W - 20);
     clamp(py, 20, MAP_H - 20);
 
+    // Black Hole pull on player (weaker than enemies)
+    for (int i = 0; i < MAX_BLACK_HOLES; i++) {
+        if (!blackHoles[i].active || blackHoles[i].exploding) continue;
+        float bdx = blackHoles[i].x - px, bdy = blackHoles[i].y - py;
+        float bd = dist(px, py, blackHoles[i].x, blackHoles[i].y);
+        if (bd < blackHoles[i].radius && bd > 1) {
+            px += (bdx / bd) * blackHoles[i].pullStrength * 0.3f * dt;
+            py += (bdy / bd) * blackHoles[i].pullStrength * 0.3f * dt;
+            clamp(px, 20, MAP_W - 20);
+            clamp(py, 20, MAP_H - 20);
+        }
+    }
+
     float mx = (float)(g.GetMouseX()) + camX, my = (float)(g.GetMouseY()) + camY;
     float ddx = mx - px, ddy = my - py;
     if (dist(px, py, mx, my) > 5) pAngle = (float)atan2(ddy, ddx);
@@ -1222,6 +1365,71 @@ static void updateCollisions(GameLib &g) {
             }
         }
     }
+
+    // Bullet-Black Hole collision
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        if (!bullets[i].active) continue;
+        for (int j = 0; j < MAX_BLACK_HOLES; j++) {
+            if (!blackHoles[j].active || blackHoles[j].exploding) continue;
+            if (dist(bullets[i].x, bullets[i].y, blackHoles[j].x, blackHoles[j].y) < 30) {
+                // Hit spark toward BH
+                for (int s = 0; s < 3; s++) {
+                    float a = (float)atan2(blackHoles[j].y - bullets[i].y, blackHoles[j].x - bullets[i].x) + (float)((rand() % 60 - 30) * M_PI / 180.0f);
+                    float spd = (float)(100 + rand() % 80);
+                    spawnParticle(bullets[i].x, bullets[i].y,
+                                  (float)cos(a) * spd, (float)sin(a) * spd,
+                                  COLOR_ARGB(255, 220, 150, 255), 0.3f, 3.0f);
+                }
+                blackHoles[j].absorbed++;
+                bullets[i].active = false;
+                break;
+            }
+        }
+    }
+
+    // Player-Black Hole collision (touch the core = death)
+    if (!invincible && !respawnInvincible && playerAlive) {
+        for (int i = 0; i < MAX_BLACK_HOLES; i++) {
+            if (!blackHoles[i].active || blackHoles[i].exploding) continue;
+            int coreR = 15 + blackHoles[i].absorbed * 2;
+            if (coreR > 35) coreR = 35;
+            if (dist(px, py, blackHoles[i].x, blackHoles[i].y) < coreR + 8) {
+                killedByType = -1; // Killed by Black Hole, not an enemy type
+                lives--;
+                if (lives <= 0) {
+                    playerAlive = false;
+                    g.SetScene(SCENE_DEATH);
+                    for (int j = 0; j < MAX_ENEMIES; j++) enemies[j].active = false;
+                    for (int j = 0; j < MAX_BLACK_HOLES; j++) blackHoles[j].active = false;
+                    spawnExplosion(px, py, COLOR_WHITE, 80);
+                    spawnExplosion(px, py, COLOR_CYAN, 60);
+                    spawnExplosion(px, py, COLOR_ARGB(255, 255, 200, 100), 40);
+                    gridImpulse(px, py, 500, 500);
+                    shake(10, 25);
+                } else {
+                    spawnExplosion(px, py, COLOR_WHITE, 30);
+                    spawnExplosion(px, py, COLOR_CYAN, 20);
+                    gridImpulse(px, py, 200, 200);
+                    shake(5, 10);
+                    g.PlayWAV(pickRandom(sounds.explosion, 8));
+                    px = MAP_W / 2.0f; py = MAP_H / 2.0f;
+                    camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
+                    for (int j = 0; j < MAX_ENEMIES; j++) {
+                        if (enemies[j].active && dist(px, py, enemies[j].x, enemies[j].y) < SPAWN_CLEAR_RADIUS) {
+                            spawnExplosion(enemies[j].x, enemies[j].y, enemyColor(enemies[j].type), 8);
+                            enemies[j].active = false;
+                        }
+                    }
+                    respawnInvincible = true;
+                    respawnTimer = RESPAWN_INVINCIBLE;
+                    energyActive = false;
+                    energyTimer = 0;
+                    for (int j = 0; j < MAX_BULLETS; j++) bullets[j].active = false;
+                }
+                break;
+            }
+        }
+    }
 }
 
 static void updateTimers(float dt) {
@@ -1261,19 +1469,49 @@ static void updateSpawner(GameLib &g, float dt) {
     if (g.GetScene() != SCENE_COMBAT || !playerAlive) return;
     gameTime += dt;
 
-    float spawnInterval = 0.35f;
-    if (gameTime > 120.0f) spawnInterval = 0.18f;
-    else if (gameTime > 90.0f) spawnInterval = 0.20f;
-    else if (gameTime > 60.0f) spawnInterval = 0.22f;
-    else if (gameTime > 30.0f) spawnInterval = 0.25f;
-    else if (gameTime > 15.0f) spawnInterval = 0.30f;
+    // -- Jack Invasion event --
+    jackTimer += dt;
+    float jackCooldown = 45.0f - gameTime * 0.01f;
+    if (jackCooldown < 30.0f) jackCooldown = 30.0f;
+    if (!jackActive && jackTimer >= jackCooldown) {
+        jackTimer = 0;
+        jackActive = true;
+        jackSpawnTimer = 0;
+        jackCount = 0;
+        jackTotal = 20 + (int)(gameTime / 30);
+        if (jackTotal > 40) jackTotal = 40;
+        showPopup("JACK INVASION!", COLOR_ARGB(255, 255, 220, 50), 3);
+        shake(5, 10);
+    }
+    if (jackActive) {
+        jackSpawnTimer += dt;
+        if (jackSpawnTimer >= 0.05f && jackCount < jackTotal) {
+            jackSpawnTimer = 0;
+            int side = rand() % 4;
+            float jx, jy;
+            float margin = 80;
+            switch (side) {
+                case 0: jx = (float)(rand() % MAP_W); jy = -margin; break;
+                case 1: jx = (float)(rand() % MAP_W); jy = MAP_H + margin; break;
+                case 2: jx = -margin; jy = (float)(rand() % MAP_H); break;
+                default: jx = MAP_W + margin; jy = (float)(rand() % MAP_H); break;
+            }
+            spawnEnemy(0, jx, jy);
+            g.PlayWAV(pickRandom(sounds.spawn, 8));
+            jackCount++;
+        }
+        if (jackCount >= jackTotal) {
+            jackActive = false;
+        }
+        if (jackActive) return; // Pause normal spawning during Jack
+    }
 
-    int maxOnScreen = 15;
-    if (gameTime > 120.0f) maxOnScreen = 40;
-    else if (gameTime > 90.0f) maxOnScreen = 35;
-    else if (gameTime > 60.0f) maxOnScreen = 30;
-    else if (gameTime > 30.0f) maxOnScreen = 25;
-    else if (gameTime > 15.0f) maxOnScreen = 20;
+    // -- Normal spawning (continuous difficulty) --
+    float spawnInterval = 0.35f - gameTime * 0.001f;
+    if (spawnInterval < 0.10f) spawnInterval = 0.10f;
+
+    int maxOnScreen = 15 + (int)(gameTime / 10);
+    if (maxOnScreen > 60) maxOnScreen = 60;
 
     int activeCount = 0;
     for (int i = 0; i < MAX_ENEMIES; i++) {
@@ -1285,27 +1523,27 @@ static void updateSpawner(GameLib &g, float dt) {
         spawnTimer = 0;
         int type;
         if (gameTime <= 15.0f) {
-            type = 0; // Only Wanderers
+            type = 0;
         } else if (gameTime <= 30.0f) {
-            type = (rand() % 3 == 0) ? 2 : 0; // 75% Wanderer, 25% Bouncer
+            type = (rand() % 3 == 0) ? 2 : 0;
         } else if (gameTime <= 60.0f) {
             int roll = rand() % 10;
-            if (roll < 5) type = 0;       // 50% Wanderer
-            else if (roll < 8) type = 1;   // 30% Chaser
-            else type = 2;                  // 20% Bouncer
+            if (roll < 5) type = 0;
+            else if (roll < 8) type = 1;
+            else type = 2;
         } else if (gameTime <= 90.0f) {
             int roll = rand() % 10;
-            if (roll < 4) type = 0;       // 40% Wanderer
-            else if (roll < 6) type = 1;   // 20% Chaser
-            else if (roll < 8) type = 2;   // 20% Bouncer
-            else type = 4;                  // 20% Weaver
+            if (roll < 4) type = 0;
+            else if (roll < 6) type = 1;
+            else if (roll < 8) type = 2;
+            else type = 4;
         } else {
             int roll = rand() % 10;
-            if (roll < 3) type = 0;       // 30% Wanderer
-            else if (roll < 5) type = 1;   // 20% Chaser
-            else if (roll < 7) type = 2;   // 20% Bouncer
-            else if (roll < 8) type = 3;   // 10% Orbiter
-            else type = 4;                  // 20% Weaver
+            if (roll < 3) type = 0;
+            else if (roll < 5) type = 1;
+            else if (roll < 7) type = 2;
+            else if (roll < 8) type = 3;
+            else type = 4;
         }
         spawnFromEdge(type);
         g.PlayWAV(pickRandom(sounds.spawn, 8));
@@ -1320,6 +1558,37 @@ static void updateSpawner(GameLib &g, float dt) {
             spawnPowerUp(pux, puy, 0);
         }
     }
+
+    // -- Black Hole spawning --
+    bhSpawnTimer += dt;
+    float bhCooldown = 60.0f + (float)(rand() % 30);
+    int activeBH = 0;
+    for (int i = 0; i < MAX_BLACK_HOLES; i++) if (blackHoles[i].active) activeBH++;
+    if (bhSpawnTimer >= bhCooldown && activeBH < MAX_BLACK_HOLES && gameTime > 60.0f) {
+        bhSpawnTimer = 0;
+        for (int tries = 0; tries < 20; tries++) {
+            float bhx = (float)(80 + rand() % (MAP_W - 160));
+            float bhy = (float)(80 + rand() % (MAP_H - 160));
+            if (dist(bhx, bhy, px, py) > 250) {
+                for (int i = 0; i < MAX_BLACK_HOLES; i++) {
+                    if (!blackHoles[i].active) {
+                        blackHoles[i].active = true;
+                        blackHoles[i].x = bhx;
+                        blackHoles[i].y = bhy;
+                        blackHoles[i].radius = 100.0f;
+                        blackHoles[i].pullStrength = 120.0f;
+                        blackHoles[i].life = 8.0f;
+                        blackHoles[i].absorbed = 0;
+                        blackHoles[i].pulse = 0;
+                        blackHoles[i].exploding = false;
+                        blackHoles[i].explodeTimer = 0;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
 }
 
 static void gameUpdate(GameLib &g, float dt) {
@@ -1328,6 +1597,7 @@ static void gameUpdate(GameLib &g, float dt) {
     updateBullets(dt);
     enemiesUpdate(dt);
     updateCollisions(g);
+    blackHolesUpdate(dt);
     particlesUpdate(dt);
     floatTextsUpdate(dt);
     popupUpdate(dt);
@@ -1402,6 +1672,36 @@ int main() {
             triggerNuke(game);
         }
 
+        // Debug hotkey: F6 = Trigger Jack Invasion
+        if (game.IsKeyPressed(KEY_F6)) {
+            jackTimer = 0;
+            jackActive = true;
+            jackSpawnTimer = 0;
+            jackCount = 0;
+            jackTotal = 25;
+            showPopup("JACK INVASION!", COLOR_ARGB(255, 255, 220, 50), 3);
+            shake(5, 10);
+        }
+
+        // Debug hotkey: F7 = Spawn Black Hole
+        if (game.IsKeyPressed(KEY_F7)) {
+            for (int i = 0; i < MAX_BLACK_HOLES; i++) {
+                if (!blackHoles[i].active) {
+                    blackHoles[i].active = true;
+                    blackHoles[i].x = px + 200;
+                    blackHoles[i].y = py;
+                    blackHoles[i].radius = 100.0f;
+                    blackHoles[i].pullStrength = 120.0f;
+                    blackHoles[i].life = 8.0f;
+                    blackHoles[i].absorbed = 0;
+                    blackHoles[i].pulse = 0;
+                    blackHoles[i].exploding = false;
+                    blackHoles[i].explodeTimer = 0;
+                    break;
+                }
+            }
+        }
+
         // ---- State machine using SetScene ----
         switch (game.GetScene()) {
             case SCENE_TITLE: {
@@ -1462,6 +1762,7 @@ int main() {
                 gridDraw(game);
                 drawMapBorder(game);
                 drawBullets(game);
+                blackHolesDraw(game);
                 drawEnemies(game);
                 if (playerAlive) drawPlayer(game);
                 powerupsDraw(game);

@@ -468,24 +468,84 @@ g.y += g.vy * dt * 60.0f;
 - 在边上随机选择位置（带 `margin = 80` 偏移）
 - 确保与玩家距离 > 250px（最多尝试 20 次）
 
-**生成节奏**（随时间递增，各阶段有比例控制）：
+**生成节奏**（连续递增，无上限封顶）：
 
-| 游戏时间 | 生成间隔 | 同时存在上限 | 可用类型及比例 |
-|----------|---------|-------------|---------------|
-| 0~15 秒 | 0.35s | 15 | 蜂群圆 100% |
-| 15~30 秒 | 0.30s | 20 | 蜂群圆 75% + 弹跳方块 25% |
-| 30~60 秒 | 0.25s | 25 | 蜂群圆 50% + 追踪三角 30% + 弹跳方块 20% |
-| 60~90 秒 | 0.22s | 30 | 蜂群圆 40% + 追踪三角 20% + 弹跳方块 20% + 蛇行者 20% |
-| 90~120 秒 | 0.20s | 35 | 蜂群圆 30% + 追踪三角 20% + 弹跳方块 20% + 绕行者 10% + 蛇行者 20% |
-| 120 秒+ | 0.18s | 40 | 全类型混合 |
+- **spawnInterval**：`max(0.10f, 0.35f - gameTime * 0.001f)`，线性递减，最低 0.10s
+- **maxOnScreen**：`min(60, 15 + (int)(gameTime / 10))`，每 10 秒 +1，上限 60
 
-**实现逻辑**：
-- 各阶段不再使用 `rand() % (maxType+1)`，而是用比例分配（`rand() % 10` 的区间分配），确保各类型数量可控
-- 追踪三角在 30 秒后才出现（比旧版延迟）
-- 弹跳方块在 15 秒后出现（比旧版提前，因为不追踪适合早期）
-- 蛇行者和绕行者分别在 60 秒和 90 秒后出现
+| 游戏时间 | spawnInterval | maxOnScreen | 可用类型及比例 |
+|----------|--------------|-------------|---------------|
+| 0~15s | 0.35s | 15 | 蜂群圆 100% |
+| 15~30s | 0.30s | 18 | 蜂群圆 75% + 弹跳方块 25% |
+| 30~60s | 0.25s | 21 | 蜂群圆 50% + 追踪三角 30% + 弹跳方块 20% |
+| 60~90s | 0.22s | 24 | + 蛇行者 20% |
+| 90~120s | 0.20s | 27 | + 绕行者 10% |
+| 180s | 0.17s | 33 | 全类型混合 |
+| 300s+ | 0.10s | 45+ | |
 
-### 6.5 碰撞检测
+**类型分布逻辑**：使用 `rand() % 10` 区间分配，各阶段比例不同
+
+### 6.5 突发事件系统
+
+#### Jack 涌入事件
+
+**触发条件**：`jackTimer >= max(30, 45 - gameTime * 0.01)`
+
+**数据结构**：
+```cpp
+static float jackTimer, jackSpawnTimer;
+static bool jackActive;
+static int jackCount, jackTotal;
+```
+
+**机制**：
+- 触发时 `showPopup("JACK INVASION!")`，`shake(5, 10)`
+- 暂停常规敌人生成（`updateSpawner` 中 `if (jackActive) return`）
+- 从四角涌入蜂群圆（type 0），0.05s 间隔，数量 `min(40, 20 + gameTime/30)`
+- 涌入的敌人全部计分（含连击）
+- 完成后恢复常规生成
+
+#### Black Hole 引力场
+
+**数据结构**：
+```cpp
+#define MAX_BLACK_HOLES 2
+struct BlackHole {
+    float x, y;           // 位置
+    float radius;          // 引力半径（初始 100，随 absorbed 增长至 180）
+    float pullStrength;    // 引力强度（120）
+    float life;            // 剩余时间（初始 8s）
+    int absorbed;          // 吸入敌人计数
+    bool active;
+    float pulse;           // 动画计时
+    bool exploding;        // 爆炸阶段
+    float explodeTimer;    // 爆炸计时（0.5s）
+};
+```
+
+**生成**：`bhSpawnTimer >= 60~90s`，`gameTime > 60s`，`dist(bh, player) > 250`，最多 2 个
+
+**引力计算**：
+- 敌人：`vx += (dx/d) * pullStrength * dt`（在 `blackHolesUpdate` 中）
+- 玩家：`px += (dx/d) * pullStrength * 0.3f * dt`（在 `updatePlayer` 中）
+
+**吸入**：`dist(enemy, bh) < 20` → enemy 消灭，absorbed++，计分（含连击）
+
+**爆炸**：`absorbed >= 10` → `exploding = true`，紫色粒子 30 个 + 震动 5px 12帧 + 释放 8 个蜂群圆 + 网格冲击 + "BLACK HOLE BURST!"
+
+**自然消失**：`life <= 0 && !exploding` → 10 粒子消散效果
+
+**碰撞**：
+- 子弹 vs BH：`dist(bullet, bh) < 30` → absorbed++，3 个紫白火花，子弹消失
+- 玩家 vs BH 核心：`dist(player, bh) < coreR + 8` → 死亡（同碰敌人）
+
+**绘制** (`blackHolesDraw`)：
+- 引力环：`DrawCircle` 半透明紫色脉冲，半径 = `radius * pulseScale`
+- 核心：`FillCircle` 暗紫色 `(120,40,160)` 半径 `15 + absorbed * 2`（上限 35）+ 外光晕 `(80, 160,60,220)`
+- 中心亮点：`FillCircle(3)` 白紫色 `alpha = 100 + absorbed * 15`
+- 爆炸：`DrawCircle` 双环冲击波扩展
+
+### 6.6 碰撞检测
 
 #### 子弹 vs 敌人
 - **检测**：圆形碰撞，`dist(bullet, enemy) < enemy.r + 4`
@@ -509,6 +569,18 @@ g.y += g.vy * dt * 60.0f;
 - **效果**：
   - 触发道具效果（清屏道具 = `triggerNuke()`）
   - 道具消失
+
+#### 子弹 vs Black Hole
+- **检测**：圆形碰撞，`dist(bullet, bh) < 30`
+- **效果**：
+  - `absorbed++`，3 个紫白火花向 BH 方向
+  - 子弹消失
+  - absorbed >= 10 时触发爆炸
+
+#### 玩家 vs Black Hole 核心
+- **检测**：圆形碰撞，`dist(player, bh) < coreR + 8`（coreR = `15 + absorbed * 2`，上限 35）
+- **效果**（无敌模式跳过）：同碰敌人——失去 1 命或最终死亡
+- `killedByType = -1`（死于 BH，不是敌人类型）
 
 ### 6.6 屏幕震动
 
@@ -621,6 +693,7 @@ camY += (ty - camY) * 0.1f;
 3. 弹簧网格（gridDraw）
 4. 地图边框（drawMapBorder）
 5. 子弹（drawBullets）
+6. Black Hole（blackHolesDraw）
 6. 敌人（drawEnemies）
 7. 玩家（drawPlayer，仅存活时，含拖尾、外层轮廓、重生闪烁和能量金光）
 8. 道具（powerupsDraw，含 Nuke 和 Energy）
