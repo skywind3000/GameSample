@@ -518,8 +518,8 @@ static void floatTextsDraw(GameLib &g) {
             int sx = (int)(ft.x - camX + shakeX);
             int sy = (int)(ft.y - camY + shakeY);
             uint32_t c = COLOR_ARGB((uint32_t)(alpha * 255), COLOR_GET_R(ft.color), COLOR_GET_G(ft.color), COLOR_GET_B(ft.color));
-            g.DrawTextScale(sx + 1, sy + 1, ft.text, COLOR_ARGB((uint32_t)(alpha * 100), 255, 255, 255), 1.2f);
-            g.DrawTextScale(sx, sy, ft.text, c, 1.2f);
+            g.DrawTextScale(sx + 1, sy + 1, ft.text, COLOR_ARGB((uint32_t)(alpha * 100), 255, 255, 255), 10, 10);
+            g.DrawTextScale(sx, sy, ft.text, c, 10, 10);
         }
     }
 }
@@ -932,8 +932,8 @@ static void popupDraw(GameLib &g) {
     int tw = (int)strlen(popup.text) * 8 * currentScale;
     int px = WIN_W / 2 - tw / 2;
     int py = WIN_H / 2 - 20;
-    g.DrawTextScale(px + 1, py + 1, popup.text, COLOR_ARGB(100, 255, 255, 255), currentScale);
-    g.DrawTextScale(px, py, popup.text, drawColor, currentScale);
+    g.DrawTextScale(px + 1, py + 1, popup.text, COLOR_ARGB(100, 255, 255, 255), 8 * currentScale, 8 * currentScale);
+    g.DrawTextScale(px, py, popup.text, drawColor, 8 * currentScale, 8 * currentScale);
 }
 
 // ============================================================
@@ -1056,8 +1056,8 @@ static int lbInsert(int newScore, float newTime, int newKills, int newCombo) {
 
 static void lbDraw(GameLib &g) {
     const char *title = "LEADERBOARD";
-    int tw = (int)strlen(title) * 8 * 3;
-    g.DrawTextScale(WIN_W / 2 - tw / 2, 30, title, COLOR_CYAN, 3);
+    int tw = (int)strlen(title) * 24;
+    g.DrawTextScale(WIN_W / 2 - tw / 2, 30, title, COLOR_CYAN, 24, 24);
     int y = 80;
     g.DrawText(60, y, "RANK", COLOR_LIGHT_GRAY);
     g.DrawText(120, y, "SCORE", COLOR_LIGHT_GRAY);
@@ -1091,9 +1091,9 @@ static void cameraUpdate() {
 // ============================================================
 // Rendering
 // ============================================================
-static void drawTextCentered(GameLib &g, const char *text, int y, uint32_t color, float scale) {
-    int tw = (int)strlen(text) * 8 * (int)scale;
-    g.DrawTextScale(WIN_W / 2 - tw / 2, y, text, color, scale);
+static void drawTextCentered(GameLib &g, const char *text, int y, uint32_t color, int fw, int fh) {
+    int tw = (int)strlen(text) * fw;
+    g.DrawTextScale(WIN_W / 2 - tw / 2, y, text, color, fw, fh);
 }
 
 static void drawPlayer(GameLib &g) {
@@ -1252,10 +1252,10 @@ static void drawMapBorder(GameLib &g) {
 static void drawHUD(GameLib &g) {
     g.DrawPrintf(10, 10, COLOR_WHITE, "SCORE: %d", score);
 
-    g.DrawPrintfScale(WIN_W / 2 - 80, 8, COLOR_GOLD, 1, "BEST: %d", bestScore);
+    g.DrawPrintfScale(WIN_W / 2 - 80, 8, COLOR_GOLD, 8, 8, "BEST: %d", bestScore);
 
     if (combo > 1) {
-        g.DrawPrintfScale(WIN_W / 2 - 30, 30, COLOR_YELLOW, 2, "x%d", combo);
+        g.DrawPrintfScale(WIN_W / 2 - 30, 30, COLOR_YELLOW, 16, 16, "x%d", combo);
     }
 
     int minutes = (int)gameTime / 60;
@@ -1956,12 +1956,12 @@ int main() {
                 float pulse = (float)sin(game.GetTime() * 2) * 0.3f + 0.7f;
                 uint32_t tc = COLOR_ARGB((uint32_t)(pulse * 255), 0, 255, 255);
                 const char *title = "GEOMETRY WARS";
-                int tw = (int)strlen(title) * 8 * 3;
-                game.DrawTextScale(WIN_W / 2 - tw / 2, 210, title, tc, 3);
+                int tw = (int)strlen(title) * 24;
+                game.DrawTextScale(WIN_W / 2 - tw / 2, 210, title, tc, 24, 24);
 
                 // Blink "PRESS ENTER"
                 if ((int)(game.GetTime() * 2) % 2 == 0) {
-                    drawTextCentered(game, "PRESS ENTER TO START", 255, COLOR_LIGHT_GRAY, 1);
+                    drawTextCentered(game, "PRESS ENTER TO START", 255, COLOR_LIGHT_GRAY, 8, 8);
                 }
 
                 // START button (mouse clickable)
@@ -1979,10 +1979,10 @@ int main() {
                 // Best records at bottom (single line)
                 int bestMin = (int)bestTime / 60;
                 int bestSec = (int)bestTime % 60;
-                game.DrawPrintfScale(WIN_W / 2 - 130, WIN_H - 50, COLOR_DARK_GRAY, 1, "BEST: %d  |  TIME %d:%02d", bestScore, bestMin, bestSec);
+                game.DrawPrintfScale(WIN_W / 2 - 130, WIN_H - 50, COLOR_DARK_GRAY, 8, 8, "BEST: %d  |  TIME %d:%02d", bestScore, bestMin, bestSec);
 
                 // Powered by GameLib
-                drawTextCentered(game, "Powered by GameLib", WIN_H - 25, COLOR_ARGB(100, 100, 100, 100), 1);
+                drawTextCentered(game, "Powered by GameLib", WIN_H - 25, COLOR_ARGB(100, 100, 100, 100), 8, 8);
 
                 if (game.IsKeyPressed(KEY_ENTER) || game.IsKeyPressed(KEY_SPACE) || startBtn) {
                     resetGame();
@@ -2089,27 +2089,27 @@ int main() {
                 gridDraw(game);
                 particlesDraw(game);
 
-                drawTextCentered(game, "GAME OVER", WIN_H / 2 - 70, COLOR_RED, 3);
+                drawTextCentered(game, "GAME OVER", WIN_H / 2 - 70, COLOR_RED, 24, 24);
 
                 char buf[64];
                 sprintf(buf, "FINAL SCORE: %d", score);
-                drawTextCentered(game, buf, WIN_H / 2 - 10, COLOR_WHITE, 1);
+                drawTextCentered(game, buf, WIN_H / 2 - 10, COLOR_WHITE, 8, 8);
 
                 int minutes = (int)gameTime / 60;
                 int seconds = (int)gameTime % 60;
                 sprintf(buf, "SURVIVED: %d:%02d", minutes, seconds);
-                drawTextCentered(game, buf, WIN_H / 2 + 15, COLOR_WHITE, 1);
+                drawTextCentered(game, buf, WIN_H / 2 + 15, COLOR_WHITE, 8, 8);
 
                 sprintf(buf, "TOTAL KILLS: %d", totalKills);
-                drawTextCentered(game, buf, WIN_H / 2 + 40, COLOR_WHITE, 1);
+                drawTextCentered(game, buf, WIN_H / 2 + 40, COLOR_WHITE, 8, 8);
                 sprintf(buf, "MAX COMBO: x%d", highestCombo);
-                drawTextCentered(game, buf, WIN_H / 2 + 65, COLOR_YELLOW, 1);
+                drawTextCentered(game, buf, WIN_H / 2 + 65, COLOR_YELLOW, 8, 8);
 
                 // Death cause
                 if (killedByType >= 0 && killedByType <= 4) {
                     uint32_t kc = enemyColor(killedByType);
                     sprintf(buf, "KILLED BY: %s", enemyTypeName(killedByType));
-                    drawTextCentered(game, buf, WIN_H / 2 + 90, kc, 1);
+                    drawTextCentered(game, buf, WIN_H / 2 + 90, kc, 8, 8);
                     int iconX = WIN_W / 2 - (int)(strlen(buf) * 8) / 2 - 20;
                     int iconY = WIN_H / 2 + 93;
                     switch (killedByType) {

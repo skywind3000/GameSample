@@ -57,7 +57,7 @@
 
 #define GAMELIB_SDL_VERSION_MAJOR 1
 #define GAMELIB_SDL_VERSION_MINOR 9
-#define GAMELIB_SDL_VERSION_PATCH 2
+#define GAMELIB_SDL_VERSION_PATCH 3
 
 #include <stdint.h>
 #include <limits.h>
@@ -499,6 +499,10 @@ private:
     bool _resizable;
 
     uint32_t *_framebuffer;
+
+    // text scale lookup tables (dynamic, max 1024)
+    int *_textSrcRowMap;
+    int *_textSrcColMap;
 
     int _keys[512];
     int _keys_prev[512];
@@ -1003,6 +1007,8 @@ GameLib::GameLib()
     _clipH = 0;
     _resizable = false;
     _framebuffer = NULL;
+    _textSrcRowMap = NULL;
+    _textSrcColMap = NULL;
     memset(_keys, 0, sizeof(_keys));
     memset(_keys_prev, 0, sizeof(_keys_prev));
     _mouseX = 0;
@@ -1086,6 +1092,11 @@ GameLib::~GameLib()
     }
 
     _DestroyWindowResources();
+
+    free(_textSrcRowMap);
+    _textSrcRowMap = NULL;
+    free(_textSrcColMap);
+    _textSrcColMap = NULL;
 
 #if GAMELIB_SDL_HAS_IMAGE
     if (_imageReady) {
@@ -2393,7 +2404,18 @@ void GameLib::DrawNumber(int x, int y, int number, uint32_t color)
 
 void GameLib::DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h)
 {
-    if (!text || w <= 0 || h <= 0) return;
+    if (!text || w <= 0 || h <= 0 || w > 1024 || h > 1024) return;
+    if (!_textSrcRowMap) {
+        _textSrcRowMap = (int*)malloc(1024 * sizeof(int));
+        _textSrcColMap = (int*)malloc(1024 * sizeof(int));
+        if (!_textSrcRowMap || !_textSrcColMap) return;
+    }
+    for (int i = 0; i < h; i++) _textSrcRowMap[i] = i * 8 / h;
+    for (int i = 0; i < w; i++) _textSrcColMap[i] = i * 8 / w;
+    if (!_framebuffer) return;
+    bool opaque = COLOR_GET_A(color) == 255;
+    int clipX1 = _clipX + _clipW;
+    int clipY1 = _clipY + _clipH;
     int ox = x;
     for (const char *p = text; *p; p++) {
         unsigned char ch = (unsigned char)*p;
@@ -2405,12 +2427,17 @@ void GameLib::DrawTextScale(int x, int y, const char *text, uint32_t color, int 
         if (ch < 32 || ch > 126) continue;
         const unsigned char *glyph = _gamelib_font8x8[ch - 32];
         for (int row = 0; row < h; row++) {
-            int srcRow = row * 8 / h;
-            unsigned char bits = glyph[srcRow];
+            int dy = y + row;
+            if (dy < _clipY || dy >= clipY1) continue;
+            unsigned char bits = glyph[_textSrcRowMap[row]];
+            if (bits == 0) continue;
+            uint32_t *dstRow = _framebuffer + (size_t)dy * _width;
             for (int col = 0; col < w; col++) {
-                int srcCol = col * 8 / w;
-                if (bits & (0x80 >> srcCol)) {
-                    SetPixel(x + col, y + row, color);
+                int dx = x + col;
+                if (dx < _clipX || dx >= clipX1) continue;
+                if (bits & (0x80 >> _textSrcColMap[col])) {
+                    if (opaque) dstRow[dx] = color;
+                    else _gamelib_blend_pixel(dstRow + dx, color);
                 }
             }
         }

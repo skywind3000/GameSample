@@ -41,7 +41,7 @@ SCENE_TITLE (1) → SCENE_LEADERBOARD (5) → SCENE_TITLE (1)
 ### 1. 开头画面 (TITLE)
 
 - 背景：黑底 + 弹簧网格缓慢自动波动（无玩家无敌人）。
-- 标题：屏幕上部黄金分割线（600 * 0.382 ≈ 229）附近大号 **"GEOMETRY WARS"**（`DrawTextScale`，scale 3~4），霓虹青色，带缓慢脉冲明暗。
+- 标题：屏幕上部黄金分割线（600 * 0.382 ≈ 229）附近大号 **"GEOMETRY WARS"**（`DrawTextScale`，字体 24×24px），霓虹青色，带缓慢脉冲明暗。
 - 副标题：标题下方小字 **"PRESS ENTER TO START"**，闪烁。
 - **START 按钮**：GameLib `Button`，鼠标可点击，键盘 Enter/Space 也生效。
 - 操作说明：按钮下方列出详细操控方式（WASD 移动、鼠标瞄准、左键射击）。

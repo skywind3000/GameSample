@@ -874,7 +874,9 @@ void DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h)
 
 - 内置 8×8 位图字体通过定点采样映射到 `w × h` 区域，`w` 和 `h` 可以不同，实现非等比缩放。
 - 旧版 `scale` 参数的效果等价于 `w = 8 × scale, h = 8 × scale`。
+- `w`、`h` 最大值 1024，超出直接返回。
 - 支持 `\n` 换行（行间距 `h + h / 4`）。
+- alpha==255 时直写 framebuffer，alpha<255 时按比例混合。
 
 ---
 
