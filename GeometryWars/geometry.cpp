@@ -197,6 +197,8 @@ static struct {
     const char *shoot[4];    // shoot-01.wav ~ shoot-04.wav
     const char *explosion[8]; // explosion-01.wav ~ explosion-08.wav
     const char *spawn[8];    // spawn-01.wav ~ spawn-08.wav
+    const char *powerup;     // powerup-01.wav
+    const char *rise[7];     // rise-01.wav ~ rise-07.wav
     const char *death;       // player death (use explosion variant)
     const char *gameOver;    // game over screen
     const char *noteHigh;    // start game prompt
@@ -712,7 +714,7 @@ static void blackHolesDraw(GameLib &g) {
 
 static void triggerNuke(GameLib &g) {
     showPopup("NUKE ACTIVATED!", COLOR_CYAN, 3);
-    g.PlayWAV(pickRandom(sounds.explosion, 8));
+    g.PlayWAV(pickRandom(sounds.explosion, 8), 1, 250);
     shake(8, 20);
     gridImpulse(px, py, 600, 400);
 
@@ -1400,7 +1402,7 @@ static void updateShooting(GameLib &g, float dt) {
                 }
             }
         }
-        g.PlayWAV(pickRandom(sounds.shoot, 4));
+        g.PlayWAV(pickRandom(sounds.shoot, 4), 1, 250);
     }
 }
 
@@ -1473,7 +1475,7 @@ static void updateCollisions(GameLib &g) {
                     spawnExplosion(enemies[j].x, enemies[j].y, enemyColor(enemies[j].type), 25 + enemies[j].type * 10);
                     gridImpulse(enemies[j].x, enemies[j].y, 120, 50 + enemies[j].type * 20);
                     shake(1 + enemies[j].type / 2, 3 + enemies[j].type);
-                    g.PlayWAV(pickRandom(sounds.explosion, 8));
+                    g.PlayWAV(pickRandom(sounds.explosion, 8), 1, 250);
 
                     char buf[16];
                     sprintf(buf, "+%d", earned);
@@ -1526,6 +1528,7 @@ static void updateCollisions(GameLib &g) {
                 if (lives <= 0) {
                     playerAlive = false;
                     g.SetScene(SCENE_DEATH);
+                    g.StopMusic();
                     for (int j = 0; j < MAX_ENEMIES; j++) enemies[j].active = false;
                     spawnExplosion(px, py, COLOR_WHITE, 80);
                     spawnExplosion(px, py, COLOR_CYAN, 60);
@@ -1537,7 +1540,7 @@ static void updateCollisions(GameLib &g) {
                     spawnExplosion(px, py, COLOR_CYAN, 20);
                     gridImpulse(px, py, 200, 200);
                     shake(5, 10);
-                    g.PlayWAV(pickRandom(sounds.explosion, 8));
+                    g.PlayWAV(pickRandom(sounds.explosion, 8), 1, 250);
                     px = MAP_W / 2.0f; py = MAP_H / 2.0f;
                     camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
                     for (int j = 0; j < MAX_ENEMIES; j++) {
@@ -1586,7 +1589,7 @@ static void updateCollisions(GameLib &g) {
                             spawnEnemy(0, dotX + (float)cos(a) * 20, dotY + (float)sin(a) * 20);
                         }
                     }
-                    g.PlayWAV(pickRandom(sounds.explosion, 8));
+                    g.PlayWAV(pickRandom(sounds.explosion, 8), 1, 250);
                     break;
                 }
             }
@@ -1600,6 +1603,7 @@ static void updateCollisions(GameLib &g) {
             if (dist(px, py, powerups[i].x, powerups[i].y) < powerups[i].r + 12) {
                 if (powerups[i].type == 0) {
                     triggerNuke(g);
+                    g.PlayWAV(sounds.powerup);
                 } else if (powerups[i].type == 1) {
                     // Activate ability based on type
                     abilityType = powerups[i].ability;
@@ -1609,6 +1613,7 @@ static void updateCollisions(GameLib &g) {
                     shieldActive = (abilityType == 2);
                     slowActive = (abilityType == 3);
                     shieldAngle = 0;
+                    g.PlayWAV(sounds.rise[abilityType]);
                     // Popup notification with ability-specific color
                     switch (abilityType) {
                         case 0: showPopup("SPREAD SHOT!", COLOR_ARGB(255, 255, 180, 60), 3); shake(3, 8); break;
@@ -1655,6 +1660,7 @@ static void updateCollisions(GameLib &g) {
                 if (lives <= 0) {
                     playerAlive = false;
                     g.SetScene(SCENE_DEATH);
+                    g.StopMusic();
                     for (int j = 0; j < MAX_ENEMIES; j++) enemies[j].active = false;
                     for (int j = 0; j < MAX_BLACK_HOLES; j++) blackHoles[j].active = false;
                     spawnExplosion(px, py, COLOR_WHITE, 80);
@@ -1667,7 +1673,7 @@ static void updateCollisions(GameLib &g) {
                     spawnExplosion(px, py, COLOR_CYAN, 20);
                     gridImpulse(px, py, 200, 200);
                     shake(5, 10);
-                    g.PlayWAV(pickRandom(sounds.explosion, 8));
+                    g.PlayWAV(pickRandom(sounds.explosion, 8), 1, 250);
                     px = MAP_W / 2.0f; py = MAP_H / 2.0f;
                     camX = px - WIN_W / 2.0f; camY = py - WIN_H / 2.0f;
                     for (int j = 0; j < MAX_ENEMIES; j++) {
@@ -1911,6 +1917,15 @@ int main() {
     sounds.spawn[6] = "assets/spawn-07.wav";
     sounds.spawn[7] = "assets/spawn-08.wav";
 
+    sounds.powerup = "assets/powerup-01.wav";
+    sounds.rise[0] = "assets/rise-01.wav";
+    sounds.rise[1] = "assets/rise-02.wav";
+    sounds.rise[2] = "assets/rise-03.wav";
+    sounds.rise[3] = "assets/rise-04.wav";
+    sounds.rise[4] = "assets/rise-05.wav";
+    sounds.rise[5] = "assets/rise-06.wav";
+    sounds.rise[6] = "assets/rise-07.wav";
+
     // Use explosion variants for death and game over
     sounds.death = sounds.explosion[0];
     sounds.gameOver = sounds.explosion[1];
@@ -2010,6 +2025,7 @@ int main() {
                 if (game.IsKeyPressed(KEY_ENTER) || game.IsKeyPressed(KEY_SPACE) || startBtn) {
                     resetGame();
                     game.SetScene(SCENE_COMBAT);
+                    game.PlayMusic("assets/music/music1.mp3");
                 }
 
                 if (game.IsKeyPressed(KEY_L)) {
@@ -2093,6 +2109,7 @@ int main() {
                     }
                     game.SetScene(SCENE_GAME_OVER);
                     deathTimer = 0;
+                    game.StopMusic();
                     game.PlayWAV(sounds.gameOver);
                 }
                 break;
@@ -2202,6 +2219,7 @@ int main() {
                     bool contBtn = game.Button(WIN_W / 2 - btnW3 / 2, WIN_H - 45, btnW3, btnH3, "CONTINUE", COLOR_CYAN);
                     if (game.IsKeyPressed(KEY_SPACE) || game.IsKeyPressed(KEY_ENTER) || contBtn) {
                         game.SetScene(SCENE_TITLE);
+                        game.StopMusic();
                         lbTimer = 0;
                         resetGame();
                     }
