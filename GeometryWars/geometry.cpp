@@ -10,10 +10,16 @@
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
 #endif
-#include "../GameLib.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+#if defined(_WIN32) && !defined(USE_SDL)
+#include "../GameLib.h"
+#else
+#include "../GameLib.SDL.h"
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -120,6 +126,8 @@ static float powerupSpawnTimer = 0.0f;  // Powerup spawn timer
 // -- Effects --
 static float shakeAmt = 0.0f, shakeX = 0.0f, shakeY = 0.0f;
 static int shakeFrames = 0;
+static float screenShakeY = 0.0f;    // Y-axis screen shake (damped sine wave)
+static int screenShakeFrames = 0;
 static float energyTimer = 0.0f;
 
 // -- Events --
@@ -291,6 +299,7 @@ static void resetGame() {
     for (int i = 0; i < MAX_BLACK_HOLES; i++) blackHoles[i].active = false;
     jackTimer = 0; jackActive = false; jackCount = 0; jackTotal = 0;
     bhSpawnTimer = 0;
+    screenShakeY = 0.0f; screenShakeFrames = 0;
 }
 
 // ============================================================
@@ -1289,6 +1298,8 @@ static void drawHUD(GameLib &g) {
 
     g.DrawPrintf(10, WIN_H - 20, COLOR_WHITE, "LIVES: %d", lives);
 
+    drawTextCentered(g, "github.com/skywind3000/GameLib", WIN_H - 20, COLOR_WHITE, 8, 8);
+
     g.DrawPrintf(WIN_W - 60, WIN_H - 20, COLOR_WHITE, "%.0f FPS", g.GetFPS());
 
     if (energyActive) {
@@ -1504,6 +1515,7 @@ static void updateCollisions(GameLib &g) {
 
                     // Orbiter splits into 3 Swarm — high-score reward (300pts) comes with crowd penalty
                     if (enemies[j].type == 3) {
+                        screenShakeFrames = 30;
                         for (int k = 0; k < 3; k++) {
                             float a = (float)(k * 120) * (float)M_PI / 180.0f;
                             spawnEnemy(0, enemies[j].x + (float)cos(a) * 20, enemies[j].y + (float)sin(a) * 20);
@@ -1995,24 +2007,15 @@ int main() {
                 uint32_t tc = COLOR_ARGB((uint32_t)(pulse * 255), 0, 255, 255);
                 const char *title = "GEOMETRY WARS";
                 int tw = (int)strlen(title) * 24;
-                game.DrawTextScale(WIN_W / 2 - tw / 2, 210, title, tc, 24, 24);
-
-                // Blink "PRESS ENTER"
-                if ((int)(game.GetTime() * 2) % 2 == 0) {
-                    drawTextCentered(game, "PRESS ENTER TO START", 255, COLOR_LIGHT_GRAY, 8, 8);
-                }
+                game.DrawTextScale(WIN_W / 2 - tw / 2, 200, title, tc, 24, 24);
 
                 // START button (mouse clickable)
                 int btnW = 140, btnH = 30;
-                bool startBtn = game.Button(WIN_W / 2 - btnW / 2, 290, btnW, btnH, "START", COLOR_CYAN);
+                bool startBtn = game.Button(WIN_W / 2 - btnW / 2, 260, btnW, btnH, "START", COLOR_CYAN);
 
-                // Controls instructions
-                int ctrlY = 340;
-                game.DrawText(WIN_W / 2 - 120, ctrlY, "WASD : Move", COLOR_DARK_GRAY);
-                game.DrawText(WIN_W / 2 - 120, ctrlY + 15, "Mouse : Aim", COLOR_DARK_GRAY);
-                game.DrawText(WIN_W / 2 - 120, ctrlY + 30, "Left Click : Shoot", COLOR_DARK_GRAY);
-                game.DrawText(WIN_W / 2 - 120, ctrlY + 45, "Enter : Start Game", COLOR_DARK_GRAY);
-                game.DrawText(WIN_W / 2 - 120, ctrlY + 60, "L : Leaderboard", COLOR_DARK_GRAY);
+                // Controls - concise two lines
+                drawTextCentered(game, "WASD Move  |  Mouse Aim + Shoot", 310, COLOR_DARK_GRAY, 8, 8);
+                drawTextCentered(game, "L Leaderboard  |  Enter Start", 330, COLOR_DARK_GRAY, 8, 8);
 
                 // Best records at bottom (single line)
                 int bestMin = (int)bestTime / 60;
@@ -2231,7 +2234,49 @@ int main() {
         // Camera always updates (except title)
         if (game.GetScene() != SCENE_TITLE) cameraUpdate();
 
-        game.Update();
+        // Y-axis screen shake: damped sine wave, shifts framebuffer rows
+    if (screenShakeFrames > 0) {
+        float t = (float)screenShakeFrames / 30.0f;  // 1.0 → 0.0
+        screenShakeY = (float)sin(screenShakeFrames * 0.7f) * 20.0f * t;
+        int offset = (int)screenShakeY;
+        uint32_t *fb = game.GetFramebuffer();
+        int w = game.GetWidth(), h = game.GetHeight();
+        if (fb && offset != 0) {
+            if (offset > 0) {
+                // Shift down: row 0..h-offset-1 moves to row offset..h-1, fill top with row 0
+                for (int y = h - 1; y >= offset; y--) {
+                    for (int x = 0; x < w; x++) {
+                        fb[y * w + x] = fb[(y - offset) * w + x];
+                    }
+                }
+                uint32_t *row0 = fb;
+                for (int y = 0; y < offset; y++) {
+                    for (int x = 0; x < w; x++) {
+                        fb[y * w + x] = row0[x];
+                    }
+                }
+            } else {
+                // Shift up: row offset..h-1 moves to row 0..h+offset-1, fill bottom with last row
+                int absOff = -offset;
+                for (int y = 0; y < h - absOff; y++) {
+                    for (int x = 0; x < w; x++) {
+                        fb[y * w + x] = fb[(y + absOff) * w + x];
+                    }
+                }
+                uint32_t *lastRow = fb + (h - 1) * w;
+                for (int y = h - absOff; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        fb[y * w + x] = lastRow[x];
+                    }
+                }
+            }
+        }
+        screenShakeFrames--;
+    } else {
+        screenShakeY = 0.0f;
+    }
+
+    game.Update();
     }
 
     return 0;
