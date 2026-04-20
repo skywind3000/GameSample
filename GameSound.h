@@ -152,6 +152,18 @@ public:
     //   -4  - channel limit reached
     int PlayPCM(const int16_t* pcm, int nchannels, int nsamples, int sample_rate, int repeat = 1, int volume = 1000);
 
+    // Generate a sine wave tone and play it, returns channel ID
+    // Parameters:
+    //   frequency - tone frequency in Hz (e.g. 262=do, 294=re, 330=mi, 349=fa, 392=so)
+    //   duration  - tone duration in milliseconds
+    //   repeat    - 0=infinite loop, 1=play once (default), >1=play N times
+    //   volume    - volume level (0-1000, default=1000)
+    // Returns:
+    //   >0  - channel ID (success)
+    //   -2  - audio device not initialized
+    //   -4  - channel limit reached
+    int PlayBeep(int frequency, int duration, int repeat = 1, int volume = 1000);
+
     // Stop a specific channel
     // Returns: 0 on success, -1 if channel not found
     int StopWAV(int channel);
@@ -1011,6 +1023,39 @@ inline int GameSound::PlayPCM(const int16_t* pcm, int nchannels, int nsamples, i
     LeaveCriticalSection(&lock_);
 #endif
 
+    return ch_id;
+}
+
+//---------------------------------------------------------------------
+// Public API: PlayBeep
+//---------------------------------------------------------------------
+inline int GameSound::PlayBeep(int frequency, int duration, int repeat, int volume) {
+    if (!initialized_) return -2;
+    if (frequency <= 0 || duration <= 0) return -1;
+
+    const int sample_rate = 44100;
+    const int nchannels = 1;
+    int total_samples = (int)((double)sample_rate * duration / 1000.0);
+    if (total_samples <= 0) return -1;
+
+    int16_t* pcm = new int16_t[total_samples];
+    double phase = 0.0;
+    double step = 2.0 * 3.14159265358979323846 * frequency / sample_rate;
+    int fade_samples = sample_rate / 100;  // 10ms fade out
+    if (fade_samples > total_samples) fade_samples = total_samples;
+    for (int i = 0; i < total_samples; i++) {
+        pcm[i] = (int16_t)(32767.0 * 0.5 * sin(phase));
+        phase += step;
+    }
+    // Apply fade out to last fade_samples samples
+    for (int i = 0; i < fade_samples; i++) {
+        double fade = 1.0 - (double)i / fade_samples;
+        pcm[total_samples - fade_samples + i] =
+            (int16_t)(pcm[total_samples - fade_samples + i] * fade);
+    }
+
+    int ch_id = PlayPCM(pcm, nchannels, total_samples, sample_rate, repeat, volume);
+    delete[] pcm;
     return ch_id;
 }
 
