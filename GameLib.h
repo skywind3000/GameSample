@@ -417,8 +417,9 @@ public:
     bool IsActive() const;
 
     // -------- Sound --------
-    void PlayBeep(int frequency, int duration);
+    int PlayBeep(int frequency, int duration, int repeat = 1, int volume = 1000);
     int PlayWAV(const char *filename, int repeat = 1, int volume = 1000);
+    int PlayPCM(const int16_t *pcm, int nchannels, int nsamples, int sample_rate, int repeat = 1, int volume = 1000);
     int StopWAV(int channel);
     int IsPlaying(int channel);
     int SetVolume(int channel, int volume);
@@ -587,8 +588,9 @@ private:
         uint16_t channels;
         uint16_t bits_per_sample;
         int ref_count;
+        bool temporary;
         _WavData() : buffer(NULL), size(0), sample_rate(0), channels(0),
-                     bits_per_sample(0), ref_count(0) {}
+                     bits_per_sample(0), ref_count(0), temporary(false) {}
         ~_WavData() { if (buffer) delete[] buffer; }
     };
     struct _Channel {
@@ -970,18 +972,20 @@ static PFN_GdipDisposeImage           _gl_GdipDisposeImage = NULL;
 static PFN_CreateStreamOnHGlobal      _gl_CreateStreamOnHGlobal = NULL;
 
 static int _gamelib_gdiplus_ready = 0;
+static int _gamelib_gdiplus_failed = 0;
 static ULONG_PTR _gamelib_gdip_token = 0;
 
 // Initialize GDI+: load gdiplus.dll / ole32.dll and call GdiplusStartup
 static int _gamelib_gdiplus_init()
 {
     if (_gamelib_gdiplus_ready) return 0;
+    if (_gamelib_gdiplus_failed) return -5;
 
     HMODULE hGdiPlus = LoadLibraryA("gdiplus.dll");
-    if (!hGdiPlus) return -1;
+    if (!hGdiPlus) { _gamelib_gdiplus_failed = 1; return -1; }
 
     HMODULE hOle32 = LoadLibraryA("ole32.dll");
-    if (!hOle32) { FreeLibrary(hGdiPlus); return -2; }
+    if (!hOle32) { FreeLibrary(hGdiPlus); _gamelib_gdiplus_failed = 1; return -2; }
 
     _gl_GdiplusStartup = _gamelib_load_proc<PFN_GdiplusStartup>(hGdiPlus, "GdiplusStartup");
     _gl_GdipCreateBitmapFromStream = _gamelib_load_proc<PFN_GdipCreateBitmapFromStream>(hGdiPlus, "GdipCreateBitmapFromStream");
@@ -997,6 +1001,7 @@ static int _gamelib_gdiplus_init()
         !_gl_GdipBitmapLockBits || !_gl_GdipBitmapUnlockBits ||
         !_gl_GdipDisposeImage || !_gl_CreateStreamOnHGlobal) {
         FreeLibrary(hOle32); FreeLibrary(hGdiPlus);
+        _gamelib_gdiplus_failed = 1;
         return -3;
     }
 
@@ -1004,8 +1009,10 @@ static int _gamelib_gdiplus_init()
     struct { unsigned int ver; void *cb; BOOL noThread; BOOL noCodecs; } si;
     si.ver = 1; si.cb = NULL; si.noThread = FALSE; si.noCodecs = FALSE;
 
-    if (_gl_GdiplusStartup(&_gamelib_gdip_token, &si, NULL) != 0)
+    if (_gl_GdiplusStartup(&_gamelib_gdip_token, &si, NULL) != 0) {
+        _gamelib_gdiplus_failed = 1;
         return -4;
+    }
 
     _gamelib_gdiplus_ready = 1;
     return 0;
@@ -4318,11 +4325,6 @@ bool GameLib::IsActive() const
 // Sound
 //=====================================================================
 
-void GameLib::PlayBeep(int frequency, int duration)
-{
-    Beep(frequency, duration);
-}
-
 bool GameLib::PlayMusic(const char *filename, bool loop)
 {
     if (!filename || !_gl_mciSendStringW) return false;
@@ -4982,7 +4984,29 @@ void GameLib::_ShutdownAudioBackend()
     if (_hWaveOut) {
         _audio_closing = true;
         _gl_waveOutReset(_hWaveOut);
-        Sleep(50);
+
+        // Wait for all buffers to be returned (WHDR_DONE) before closing.
+        // waveOutReset is asynchronous; closing before buffers are done
+        // can cause the callback to operate on a closed device handle.
+        for (int attempt = 0; attempt < 100; attempt++) {
+            bool allDone = true;
+            for (int i = 0; i < 2; i++) {
+                if (_wave_hdr[i] && !(_wave_hdr[i]->dwFlags & WHDR_DONE)) {
+                    allDone = false;
+                    break;
+                }
+            }
+            if (allDone) break;
+            Sleep(5);
+        }
+
+        // Unprepare headers before closing the device
+        for (int i = 0; i < 2; i++) {
+            if (_wave_hdr[i] && _gl_waveOutUnprepareHeader) {
+                _gl_waveOutUnprepareHeader(_hWaveOut, _wave_hdr[i], sizeof(WAVEHDR));
+            }
+        }
+
         _gl_waveOutClose(_hWaveOut);
         _hWaveOut = NULL;
     }
@@ -5079,13 +5103,19 @@ void GameLib::_MixAudio(int16_t *output_buffer, int sample_count)
         ch->position += frames_to_mix * bytes_per_frame;
 
         if (ch->position >= ch->wav->size) {
-            if (ch->repeat == 0) {
+            if (ch->repeat <= 0) {
+                // <=0: infinite loop
                 ch->position = 0;
             } else if (ch->repeat > 1) {
+                // >1: decrement and loop
                 ch->position = 0;
                 ch->repeat--;
             } else {
-                if (ch->wav) ch->wav->ref_count--;
+                // 1: last play, stop now
+                if (ch->wav) {
+                    ch->wav->ref_count--;
+                    if (ch->wav->temporary) delete ch->wav;
+                }
                 delete ch;
                 it = _audio_channels.erase(it);
                 continue;
@@ -5301,6 +5331,7 @@ void GameLib::_ReleaseChannel(int channel_id)
     if (it != _audio_channels.end()) {
         if (it->second->wav) {
             it->second->wav->ref_count--;
+            if (it->second->wav->temporary) delete it->second->wav;
         }
         delete it->second;
         _audio_channels.erase(it);
@@ -5323,8 +5354,12 @@ int GameLib::PlayWAV(const char *filename, int repeat, int volume)
     _WavData *wav = _LoadOrCacheWAV(filename);
     if (!wav) return -1;
 
+    EnterCriticalSection(&_audio_lock);
     int ch_id = _AllocateChannel();
-    if (ch_id == 0) return -4;
+    if (ch_id == 0) {
+        LeaveCriticalSection(&_audio_lock);
+        return -4;
+    }
 
     _Channel *ch = new _Channel();
     ch->id = ch_id;
@@ -5333,8 +5368,48 @@ int GameLib::PlayWAV(const char *filename, int repeat, int volume)
     ch->repeat = repeat;
     ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
     ch->is_playing = true;
+    _audio_channels[ch_id] = ch;
+    LeaveCriticalSection(&_audio_lock);
+
+    return ch_id;
+}
+
+int GameLib::PlayPCM(const int16_t *pcm, int nchannels, int nsamples, int sample_rate, int repeat, int volume)
+{
+    if (!pcm || nchannels < 1 || nchannels > 2 || nsamples <= 0 || sample_rate <= 0) return -1;
+    if (!_audio_initialized) {
+        _audio_initialized = _InitAudioBackend();
+        if (!_audio_initialized) return -2;
+    }
+
+    _WavData src;
+    src.sample_rate = (uint32_t)sample_rate;
+    src.channels = (uint16_t)nchannels;
+    src.bits_per_sample = 16;
+    src.size = (uint32_t)(nsamples * sizeof(int16_t));
+    src.buffer = (uint8_t*)pcm;
+
+    _WavData *wav = _ConvertToTargetFormat(&src);
+    src.buffer = NULL;
+
+    if (!wav) return -1;
+    wav->temporary = true;
 
     EnterCriticalSection(&_audio_lock);
+    int ch_id = _AllocateChannel();
+    if (ch_id == 0) {
+        LeaveCriticalSection(&_audio_lock);
+        delete wav;
+        return -4;
+    }
+
+    _Channel *ch = new _Channel();
+    ch->id = ch_id;
+    ch->wav = wav;
+    ch->position = 0;
+    ch->repeat = repeat;
+    ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    ch->is_playing = true;
     _audio_channels[ch_id] = ch;
     LeaveCriticalSection(&_audio_lock);
 
@@ -5403,6 +5478,40 @@ int GameLib::SetMasterVolume(int volume)
 int GameLib::GetMasterVolume() const
 {
     return _master_volume;
+}
+
+
+int GameLib::PlayBeep(int frequency, int duration, int repeat, int volume)
+{
+    if (frequency <= 0 || duration <= 0) return -1;
+    if (!_audio_initialized) {
+        _audio_initialized = _InitAudioBackend();
+        if (!_audio_initialized) return -2;
+    }
+
+    const int sample_rate = 44100;
+    const int nchannels = 1;
+    int total_samples = (int)((double)sample_rate * duration / 1000.0);
+    if (total_samples <= 0) return -1;
+
+    int16_t *pcm = new int16_t[total_samples];
+    double phase = 0.0;
+    double step = 2.0 * 3.14159265358979323846 * frequency / sample_rate;
+    int fade_samples = sample_rate / 100;
+    if (fade_samples > total_samples) fade_samples = total_samples;
+    for (int i = 0; i < total_samples; i++) {
+        pcm[i] = (int16_t)(32767.0 * 0.5 * sin(phase));
+        phase += step;
+    }
+    for (int i = 0; i < fade_samples; i++) {
+        double fade = 1.0 - (double)i / fade_samples;
+        pcm[total_samples - fade_samples + i] =
+            (int16_t)(pcm[total_samples - fade_samples + i] * fade);
+    }
+
+    int ch_id = PlayPCM(pcm, nchannels, total_samples, sample_rate, repeat, volume);
+    delete[] pcm;
+    return ch_id;
 }
 
 

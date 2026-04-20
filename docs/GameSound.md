@@ -110,7 +110,7 @@ struct Channel {
     int id;                   // Channel 唯一 ID
     WavData* wav;             // 指向 WAV 数据（缓存或临时）
     uint32_t position;        // 当前播放位置（字节偏移）
-    int repeat;               // 剩余重复次数（1=播放一次，0=无限循环，>1=N次）
+    int repeat;               // 剩余播放次数（<=0=无限循环，1=最后一次，>1=递减）
     int volume;               // 单个 channel 音量 (0-1000)
     bool is_playing;          // 是否正在播放
 
@@ -303,10 +303,10 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
 
         // 处理循环/结束逻辑
         if (ch->position >= ch->wav->size) {
-            if (ch->repeat == 0) {
-                ch->position = 0;  // 无限循环
+            if (ch->repeat <= 0) {
+                ch->position = 0;  // <=0: 无限循环
             } else if (ch->repeat > 1) {
-                ch->position = 0;
+                ch->position = 0;  // >1: 递减
                 ch->repeat--;
             } else {
                 // 播放结束：内联释放，避免 ReleaseChannel 的二次查找
@@ -361,7 +361,27 @@ waveOut 的 ShutdownAudioBackend：
 ```cpp
 closing_ = true;
 waveOutReset(h_wave_out_);
-Sleep(50);
+
+// 轮询等待所有缓冲区返回（WHDR_DONE），最多 500ms
+// waveOutReset 是异步的，提前关闭设备可能导致回调操作已关闭的句柄
+for (int attempt = 0; attempt < 100; attempt++) {
+    bool allDone = true;
+    for (int i = 0; i < 2; i++) {
+        if (wave_hdr_[i] && !(wave_hdr_[i]->dwFlags & WHDR_DONE)) {
+            allDone = false;
+            break;
+        }
+    }
+    if (allDone) break;
+    Sleep(5);
+}
+
+// 关闭前 unprepare header
+for (int i = 0; i < 2; i++) {
+    if (wave_hdr_[i])
+        waveOutUnprepareHeader(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
+}
+
 waveOutClose(h_wave_out_);
 for (int i = 0; i < 2; i++) {
     delete[] wave_hdr_[i]->lpData;
@@ -811,5 +831,6 @@ int main() {
 | MixAudio channel 释放 | 内联 erase 替代 ReleaseChannel | 避免 ReleaseChannel 的二次 find 查找，迭代器生命周期更清晰 | 2026-04-19 |
 | WAV 参数验证 | channels/sample_rate/bits_per_sample 合法性检查 | 防止 ConvertToTargetFormat 除零和未初始化内存访问 | 2026-04-19 |
 | WAV data chunk 验证 | size != 0 且 ≤ 100MB | 防止超大值导致 bad_alloc 或 0 导致未定义行为 | 2026-04-19 |
+| AllocateChannel 在锁内调用 | 与 channels_ 插入在同一临界区 | 防止回调线程并发修改 channels_ 导致 size/count 不一致 | 2026-04-20 |
 | WAV chunk padding | 奇数大小跳过 padding 字节 | WAV 规范要求 chunk 按 2 字节对齐，奇数大小有 1 字节填充 | 2026-04-19 |
 | ConvertToTargetFormat 入口验证 | NULL/空 buffer/size=0/sample_rate=0/channels=0 检查 | 独立调用时的除零保护，不依赖 LoadWAVFromFile 的上游拦截 | 2026-04-19 |

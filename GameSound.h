@@ -127,7 +127,7 @@ public:
     // Play a WAV file, returns channel ID
     // Parameters:
     //   filename - path to WAV file
-    //   repeat   - 0=infinite loop, 1=play once (default), >1=play N times
+    //   repeat   - <=0 infinite loop, 1=play once (default), >1=play N times (decrements)
     //   volume   - volume level (0-1000, default=1000)
     // Returns:
     //   >0  - channel ID (success)
@@ -143,7 +143,7 @@ public:
     //   nchannels  - number of channels (1=mono, 2=stereo)
     //   nsamples   - total number of int16_t values in pcm buffer
     //   sample_rate- sample rate of the PCM data (e.g. 44100, 22050)
-    //   repeat     - 0=infinite loop, 1=play once (default), >1=play N times
+    //   repeat     - <=0 infinite loop, 1=play once (default), >1=play N times (decrements)
     //   volume     - volume level (0-1000, default=1000)
     // Returns:
     //   >0  - channel ID (success)
@@ -156,7 +156,7 @@ public:
     // Parameters:
     //   frequency - tone frequency in Hz (e.g. 262=do, 294=re, 330=mi, 349=fa, 392=so)
     //   duration  - tone duration in milliseconds
-    //   repeat    - 0=infinite loop, 1=play once (default), >1=play N times
+    //   repeat    - <=0 infinite loop, 1=play once (default), >1=play N times (decrements)
     //   volume    - volume level (0-1000, default=1000)
     // Returns:
     //   >0  - channel ID (success)
@@ -723,11 +723,11 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
         
         // Handle loop/end logic
         if (ch->position >= ch->wav->size) {
-            if (ch->repeat == 0) {
-                // Infinite loop
+            if (ch->repeat <= 0) {
+                // <=0: infinite loop
                 ch->position = 0;
             } else if (ch->repeat > 1) {
-                // Finite loop
+                // >1: decrement and loop
                 ch->position = 0;
                 ch->repeat--;
             } else {
@@ -910,13 +910,31 @@ inline void GameSound::ShutdownAudioBackend() {
         GS_DEBUG_PRINT("  waveOut: Setting closing flag...");
         closing_ = true;
         
-        // Small delay to let any in-flight callback complete
         GS_DEBUG_PRINT("  waveOut: Calling waveOutReset...");
         MMRESULT reset_result = waveOutReset(h_wave_out_);
         GS_DEBUG_PRINT("  waveOut: waveOutReset returned: %u", reset_result);
         
-        // Give callback thread time to exit
-        Sleep(50);
+        // Wait for all buffers to be returned (WHDR_DONE) before closing.
+        // waveOutReset is asynchronous; closing before buffers are done
+        // can cause the callback to operate on a closed device handle.
+        for (int attempt = 0; attempt < 100; attempt++) {
+            bool allDone = true;
+            for (int i = 0; i < 2; i++) {
+                if (wave_hdr_[i] && !(wave_hdr_[i]->dwFlags & WHDR_DONE)) {
+                    allDone = false;
+                    break;
+                }
+            }
+            if (allDone) break;
+            Sleep(5);
+        }
+        
+        // Unprepare headers before closing the device
+        for (int i = 0; i < 2; i++) {
+            if (wave_hdr_[i]) {
+                waveOutUnprepareHeader(h_wave_out_, wave_hdr_[i], sizeof(WAVEHDR));
+            }
+        }
         
         GS_DEBUG_PRINT("  waveOut: Calling waveOutClose...");
         MMRESULT close_result = waveOutClose(h_wave_out_);
