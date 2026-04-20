@@ -1760,7 +1760,6 @@ static void updateSpawner(GameLib &g, float dt) {
                 default: jx = MAP_W + margin; jy = (float)(rand() % MAP_H); break;
             }
             spawnEnemy(0, jx, jy);
-            g.PlayWAV(pickRandom(sounds.spawn, 8));
             jackCount++;
         }
         if (jackCount >= jackTotal) {
@@ -1811,7 +1810,7 @@ static void updateSpawner(GameLib &g, float dt) {
             else type = 4;
         }
         spawnFromEdge(type);
-        g.PlayWAV(pickRandom(sounds.spawn, 8));
+        if (gameTime > 3.0f && type != 0) g.PlayWAV(pickRandom(sounds.spawn, 8));
     }
 
     powerupSpawnTimer += dt;
@@ -2011,7 +2010,6 @@ int main() {
                 if (game.IsKeyPressed(KEY_ENTER) || game.IsKeyPressed(KEY_SPACE) || startBtn) {
                     resetGame();
                     game.SetScene(SCENE_COMBAT);
-                    game.PlayWAV(sounds.noteHigh);
                 }
 
                 if (game.IsKeyPressed(KEY_L)) {
