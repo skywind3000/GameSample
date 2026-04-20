@@ -137,6 +137,21 @@ public:
     //   -4  - channel limit reached (max 32 simultaneous sounds)
     int PlayWAV(const char* filename, int repeat = 1, int volume = 1000);
 
+    // Play raw PCM data (16-bit signed, interleaved), returns channel ID
+    // Parameters:
+    //   pcm        - pointer to 16-bit signed PCM samples (interleaved if multi-channel)
+    //   nchannels  - number of channels (1=mono, 2=stereo)
+    //   nsamples   - total number of int16_t values in pcm buffer
+    //   sample_rate- sample rate of the PCM data (e.g. 44100, 22050)
+    //   repeat     - 0=infinite loop, 1=play once (default), >1=play N times
+    //   volume     - volume level (0-1000, default=1000)
+    // Returns:
+    //   >0  - channel ID (success)
+    //   -1  - conversion/resampling failed
+    //   -2  - audio device not initialized
+    //   -4  - channel limit reached
+    int PlayPCM(const int16_t* pcm, int nchannels, int nsamples, int sample_rate, int repeat = 1, int volume = 1000);
+
     // Stop a specific channel
     // Returns: 0 on success, -1 if channel not found
     int StopWAV(int channel);
@@ -174,9 +189,10 @@ private:
         uint16_t channels;
         uint16_t bits_per_sample;
         int ref_count;
+        bool temporary;
 
-        WavData() : buffer(NULL), size(0), sample_rate(0), channels(0), 
-                    bits_per_sample(0), ref_count(0) {}
+        WavData() : buffer(NULL), size(0), sample_rate(0), channels(0),
+                    bits_per_sample(0), ref_count(0), temporary(false) {}
         ~WavData() { if (buffer) delete[] buffer; }
     };
 
@@ -563,6 +579,8 @@ inline GameSound::WavData* GameSound::LoadOrCacheWAV(const char* filename) {
     WavData* wav = LoadWAVFromFile(filename);
     if (wav) {
         wav->ref_count = 1;
+        wav->temporary = false;
+        wav->temporary = false;
         wav_cache_[key] = wav;
     }
     return wav;
@@ -604,6 +622,7 @@ inline void GameSound::ReleaseChannel(int channel_id) {
     if (it != channels_.end()) {
         if (it->second->wav) {
             it->second->wav->ref_count--;
+            if (it->second->wav->temporary) delete it->second->wav;
         }
         delete it->second;
         channels_.erase(it);
@@ -703,6 +722,7 @@ inline void GameSound::MixAudio(int16_t* output_buffer, int sample_count) {
                 // Playback finished — inline release, avoid double lookup
                 if (ch->wav) {
                     ch->wav->ref_count--;
+                    if (ch->wav->temporary) delete ch->wav;
                 }
                 delete ch;
                 it = channels_.erase(it);
@@ -923,6 +943,54 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
     // Allocate new channel (returns 0 if limit reached)
     int ch_id = AllocateChannel();
     if (ch_id == 0) return -4;  // Channel limit reached
+    Channel* ch = new Channel();
+    ch->id = ch_id;
+    ch->wav = wav;
+    ch->position = 0;
+    ch->repeat = repeat;
+    ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
+    ch->is_playing = true;
+
+#if GAMESOUND_USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
+    EnterCriticalSection(&lock_);
+#endif
+    channels_[ch_id] = ch;
+#if GAMESOUND_USE_SDL
+    SDL_UnlockAudioDevice(audio_device_);
+#else
+    LeaveCriticalSection(&lock_);
+#endif
+
+    return ch_id;
+}
+
+//---------------------------------------------------------------------
+// Public API: PlayPCM
+//---------------------------------------------------------------------
+inline int GameSound::PlayPCM(const int16_t* pcm, int nchannels, int nsamples, int sample_rate, int repeat, int volume) {
+    if (!initialized_) return -2;
+
+    if (!pcm || nchannels < 1 || nchannels > 2 || nsamples <= 0 || sample_rate <= 0) return -1;
+
+    // Borrow pcm pointer — no allocation, no copy
+    WavData src;
+    src.sample_rate = (uint32_t)sample_rate;
+    src.channels = (uint16_t)nchannels;
+    src.bits_per_sample = 16;
+    src.size = (uint32_t)(nsamples * sizeof(int16_t));
+    src.buffer = (uint8_t*)pcm;
+
+    WavData* wav = ConvertToTargetFormat(&src);
+    src.buffer = NULL;  // prevent destructor from freeing external memory
+
+    if (!wav) return -1;
+    wav->temporary = true;
+
+    int ch_id = AllocateChannel();
+    if (ch_id == 0) { delete wav; return -4; }
+
     Channel* ch = new Channel();
     ch->id = ch_id;
     ch->wav = wav;

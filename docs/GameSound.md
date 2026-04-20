@@ -19,6 +19,13 @@ public:
     //   -3: 内存分配失败
     int PlayWAV(const char* filename, int repeat = 1, int volume = 1000);
 
+    // 播放原始 PCM 数据（16-bit signed, 交错存储），返回 channel ID
+    // 返回值: >0 表示 channel ID，<=0 表示错误码
+    //   -1: PCM 数据转换/重采样失败
+    //   -2: 音频设备未初始化
+    //   -4: channel 数量达到上限
+    int PlayPCM(const int16_t* pcm, int nchannels, int nsamples, int sample_rate, int repeat = 1, int volume = 1000);
+
     // 停止指定 channel
     // 返回值: 0 成功，-1 channel 不存在或未播放
     int StopWAV(int channel);
@@ -83,6 +90,7 @@ struct WavData {
     uint16_t channels;        // 声道数（固定 2）
     uint16_t bits_per_sample; // 位深（固定 16）
     int ref_count;            // 引用计数
+    bool temporary;            // 是否为临时数据（true=PlayPCM 临时创建，播放结束自动释放；false=缓存数据）
 
     ~WavData();               // 释放 buffer
 };
@@ -91,16 +99,16 @@ struct WavData {
 **缓存策略**：
 - 文件名作为 key，使用 `std::unordered_map<std::string, WavData*>` 存储
 - `PlayWAV` 时检查缓存，若已存在则直接复用，`ref_count++`
-- Channel 销毁时，对应 WavData 的 `ref_count--`
-- `GameSound` 析构时遍历缓存，强制释放所有 WavData
-- **设计选择**：WAV 缓存不做运行时驱逐，所有缓存数据在 GameSound 析构时统一释放。这是有意为之的简化设计——游戏场景下音效文件数量有限且生命周期与 GameSound 对象一致，运行时驱逐带来的复杂度（如判断何时安全释放、ref_count 为 0 但稍后可能再次播放同一文件）不值得收益。
+- `PlayPCM` 创建的 WavData 设置 `temporary = true`，不进入缓存
+- Channel 销毁时，对应 WavData 的 `ref_count--`；若 `temporary == true`，立即 `delete wav` 释放临时数据
+- 缓存 WavData（`temporary == false`）不做运行时驱逐，`GameSound` 析构时统一释放
 
 ### Channel 状态
 
 ```cpp
 struct Channel {
     int id;                   // Channel 唯一 ID
-    WavData* wav;             // 指向缓存的 WAV 数据
+    WavData* wav;             // 指向 WAV 数据（缓存或临时）
     uint32_t position;        // 当前播放位置（字节偏移）
     int repeat;               // 剩余重复次数（1=播放一次，0=无限循环，>1=N次）
     int volume;               // 单个 channel 音量 (0-1000)
@@ -302,7 +310,10 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
                 ch->repeat--;
             } else {
                 // 播放结束：内联释放，避免 ReleaseChannel 的二次查找
-                if (ch->wav) ch->wav->ref_count--;
+                if (ch->wav) {
+                    ch->wav->ref_count--;
+                    if (ch->wav->temporary) delete ch->wav;
+                }
                 delete ch;
                 it = channels_.erase(it);
                 continue;
@@ -372,7 +383,7 @@ if (sdl_audio_init_by_self_ && SDL_WasInit(SDL_INIT_AUDIO)) {
 
 #### 为什么需要重采样
 
-音频设备固定输出格式（44100Hz / 立体声 / 16-bit），但 WAV 文件可能具有不同采样率、声道数或位深。**所有 WAV 在加载时统一转换**，混音器无需实时重采样。
+音频设备固定输出格式（44100Hz / 立体声 / 16-bit），但 WAV 文件或 PCM 数据可能有不同采样率、声道数。**所有数据在播放前统一转换**，混音器无需实时重采样。
 
 #### 转换策略：加载时统一转换
 
@@ -514,6 +525,42 @@ WavData* LoadWAVFromFile(const char* filename) {
     return converted;
 }
 ```
+
+### PlayPCM 数据流
+
+PlayPCM 接收外部的 16-bit signed PCM 数据，复用 ConvertToTargetFormat 完成重采样和声道转换：
+
+```cpp
+int GameSound::PlayPCM(const int16_t* pcm, int nchannels, int nsamples, int sample_rate, int repeat, int volume) {
+    if (!initialized_) return -2;
+    if (!pcm || nchannels < 1 || nchannels > 2 || nsamples <= 0 || sample_rate <= 0) return -1;
+
+    // 借用 pcm 指针，零分配零拷贝
+    WavData src;
+    src.sample_rate = (uint32_t)sample_rate;
+    src.channels = (uint16_t)nchannels;
+    src.bits_per_sample = 16;
+    src.size = (uint32_t)(nsamples * sizeof(int16_t));
+    src.buffer = (uint8_t*)pcm;
+
+    WavData* wav = ConvertToTargetFormat(&src);
+    src.buffer = NULL;  // 防止析构释放外部内存
+    if (!wav) return -1;
+    wav->temporary = true;  // 临时数据，播放结束自动释放
+
+    // 分配 channel，与 PlayWAV 逻辑一致
+    int ch_id = AllocateChannel();
+    if (ch_id == 0) { delete wav; return -4; }
+    // ...设置 channel 状态并插入 channels_
+    return ch_id;
+}
+```
+
+**关键设计**：
+- 栈上构造临时 WavData，`buffer` 直接指向外部 pcm 指针，零分配零拷贝
+- ConvertToTargetFormat 内部会分配新的 buffer 存放转换后的数据，转换结果 WavData 的 `temporary = true`
+- 播放结束或 StopWAV 时，`ref_count--` 后检查 `temporary`，临时数据立即 `delete` 释放
+- PCM 数据仅在调用时读取，播放期间不需要保持 pcm 指针有效
 
 ### SDL2 方案
 
@@ -747,6 +794,8 @@ int main() {
 | 类型安全 | uint8_t cast | 防止 char 符号扩展 bug | 2026-04-19 |
 | 实现方式 | header-only 单文件 | stb 风格，易于集成 | 2026-04-19 |
 | WAV 缓存驱逐 | 不驱逐，析构时统一释放 | 游戏音效数量有限且生命周期与 GameSound 一致，运行时驱逐增加复杂度不值得 | 2026-04-19 |
+| PlayPCM 临时数据 temporary 标记 | `temporary=true` 的 WavData 在 ref_count=0 时立即释放 | 临时 PCM 数据不属于缓存，播放完即销毁；复用 ConvertToTargetFormat | 2026-04-20 |
+| PlayPCM 借用外部指针 | 栈上 WavData，buffer 直接指向 pcm 参数 | 零分配零拷贝，转换后设 NULL 防止析构释放外部内存 | 2026-04-20 |
 | SDL2 头文件引入 | GameSound.h 自动包含 SDL.h，自动检测路径 | 支持 `<SDL2/SDL.h>` 和 `<SDL.h>` 两种路径，兼容不同平台和发行版 | 2026-04-19 |
 | SDL_MAIN_HANDLED | GameSound.h 自动定义 | 无需 -lmingw32 -lSDL2main，与 GameLib.SDL.h 兼容 | 2026-04-19 |
 | 跨平台后端选择 | Windows 默认 waveOut，其他平台默认 SDL2 | waveOut 零依赖适合 Windows；SDL2 是 Linux/macOS 唯一选项 | 2026-04-19 |
