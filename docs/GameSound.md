@@ -332,7 +332,8 @@ void MixAudio(int16_t* output_buffer, int sample_count) {
 #### 线程安全
 
 - waveOut 回调在独立线程执行，访问 `channels_` 需要 `CRITICAL_SECTION` 加锁
-- 主线程调用 `PlayWAV`/`StopWAV`/`SetVolume` 时需加锁
+- 主线程调用 `PlayWAV`/`PlayPCM`/`StopWAV`/`SetVolume` 时需加锁
+- `AllocateChannel` 在锁内调用，确保与 `channels_` 插入在同一临界区，防止回调线程并发修改 `channels_` 导致 size/count 不一致
 - `closing_` 必须是 `volatile`，因为跨线程访问
 
 #### 析构安全
@@ -548,10 +549,12 @@ int GameSound::PlayPCM(const int16_t* pcm, int nchannels, int nsamples, int samp
     if (!wav) return -1;
     wav->temporary = true;  // 临时数据，播放结束自动释放
 
-    // 分配 channel，与 PlayWAV 逻辑一致
+    // 加锁：AllocateChannel + 插入 channels_ 必须在同一临界区
+    Lock();
     int ch_id = AllocateChannel();
-    if (ch_id == 0) { delete wav; return -4; }
+    if (ch_id == 0) { Unlock(); delete wav; return -4; }
     // ...设置 channel 状态并插入 channels_
+    Unlock();
     return ch_id;
 }
 ```

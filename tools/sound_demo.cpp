@@ -6,7 +6,8 @@
 // with multi-channel support and per-channel volume control.
 //
 // Controls:
-//   Number keys 1-8: Play explosion sounds
+//   Number keys 1-8: Play do re mi fa so la xi do (C4-C5) via PlayBeep
+//   J-K-L-M-N-O-P-Z: Play scale do re mi fa so la xi do (C4-C5) via PlayBeep
 //   Number keys 9-0: Play shoot sounds  
 //   Q-W-E-R-T: Play spawn sounds
 //   A/S/D/F: Adjust volume of last played channel
@@ -25,6 +26,7 @@
 // Uncomment the next line to use SDL2 audio backend instead of waveOut:
 #define GAMESOUND_USE_SDL 0
 
+#include <math.h>
 #define GAMESOUND_IMPLEMENTATION
 #include "../GameSound.h"
 
@@ -72,6 +74,23 @@ static const int g_explosion_count = sizeof(g_explosion_sounds) / sizeof(const c
 static const int g_shoot_count = sizeof(g_shoot_sounds) / sizeof(const char*);
 static const int g_spawn_count = sizeof(g_spawn_sounds) / sizeof(const char*);
 
+// Musical scale: C4 to C5 (do re mi fa so la xi do)
+static const int g_scale_freq[] = {
+    262,  // C4 - do
+    294,  // D4 - re
+    330,  // E4 - mi
+    349,  // F4 - fa
+    392,  // G4 - so
+    440,  // A4 - la
+    494,  // B4 - xi
+    523,  // C5 - do
+};
+static const char* g_scale_names[] = {
+    "C4(do)", "D4(re)", "E4(mi)", "F4(fa)",
+    "G4(so)", "A4(la)", "B4(xi)", "C5(do)"
+};
+static const int g_scale_count = sizeof(g_scale_freq) / sizeof(int);
+
 // Draw text with background
 static void DrawTextBG(GameLib& game, int x, int y, const char* text, int text_color, int bg_color) {
     int len = (int)strlen(text);
@@ -105,8 +124,19 @@ int main() {
         game.DrawText(20, 20, "GameSound Multi-Channel Audio Demo", COLOR_CYAN);
         game.DrawText(20, 45, "Press keys to play sounds:", COLOR_WHITE);
 
-        // Explosion sounds (1-8)
+        // Scale notes (1-8)
         int y = 80;
+        DrawTextBG(game, 40, y, "[J-K-L-M-N-O-P-Z] Scale via PlayBeep", COLOR_ORANGE, 0x332200);
+        y += 25;
+        const char beep_key_names[] = {'J','K','L','M','N','O','P','Z'};
+        for (int i = 0; i < g_scale_count; i++) {
+            char buf[64];
+            sprintf(buf, "  %c: %s (%dHz)", beep_key_names[i], g_scale_names[i], g_scale_freq[i]);
+            game.DrawText(60, y, buf, COLOR_LIGHT_GRAY);
+            y += 20;
+        }
+
+        // Explosion sounds (1-8)
         DrawTextBG(game, 40, y, "[1-8] Explosion Sounds", COLOR_YELLOW, 0x333300);
         y += 25;
         for (int i = 0; i < g_explosion_count; i++) {
@@ -216,6 +246,16 @@ int main() {
             if (game.IsKeyPressed(spawn_keys_code[i])) {
                 DEBUG_PRINT("Playing spawn-%02d.wav", i + 1);
                 last_channel = sound.PlayWAV(g_spawn_sounds[i], 1, current_volume);
+                DEBUG_PRINT("  -> channel=%d", last_channel);
+            }
+        }
+
+        // Scale notes via PlayBeep (J=do, K=re, L=mi, M=fa, N=so)
+        int beep_keys[] = {KEY_J, KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Z};
+        for (int i = 0; i < g_scale_count; i++) {
+            if (game.IsKeyPressed(beep_keys[i])) {
+                DEBUG_PRINT("Playing %s (%dHz)", g_scale_names[i], g_scale_freq[i]);
+                last_channel = sound.PlayBeep(g_scale_freq[i], 500, 1, current_volume);
                 DEBUG_PRINT("  -> channel=%d", last_channel);
             }
         }

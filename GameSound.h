@@ -952,9 +952,21 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
     WavData* wav = LoadOrCacheWAV(filename);
     if (!wav) return -1;
 
+#if GAMESOUND_USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
+    EnterCriticalSection(&lock_);
+#endif
     // Allocate new channel (returns 0 if limit reached)
     int ch_id = AllocateChannel();
-    if (ch_id == 0) return -4;  // Channel limit reached
+    if (ch_id == 0) {
+#if GAMESOUND_USE_SDL
+        SDL_UnlockAudioDevice(audio_device_);
+#else
+        LeaveCriticalSection(&lock_);
+#endif
+        return -4;  // Channel limit reached
+    }
     Channel* ch = new Channel();
     ch->id = ch_id;
     ch->wav = wav;
@@ -962,12 +974,6 @@ inline int GameSound::PlayWAV(const char* filename, int repeat, int volume) {
     ch->repeat = repeat;
     ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
     ch->is_playing = true;
-
-#if GAMESOUND_USE_SDL
-    SDL_LockAudioDevice(audio_device_);
-#else
-    EnterCriticalSection(&lock_);
-#endif
     channels_[ch_id] = ch;
 #if GAMESOUND_USE_SDL
     SDL_UnlockAudioDevice(audio_device_);
@@ -1000,8 +1006,21 @@ inline int GameSound::PlayPCM(const int16_t* pcm, int nchannels, int nsamples, i
     if (!wav) return -1;
     wav->temporary = true;
 
+#if GAMESOUND_USE_SDL
+    SDL_LockAudioDevice(audio_device_);
+#else
+    EnterCriticalSection(&lock_);
+#endif
     int ch_id = AllocateChannel();
-    if (ch_id == 0) { delete wav; return -4; }
+    if (ch_id == 0) {
+#if GAMESOUND_USE_SDL
+        SDL_UnlockAudioDevice(audio_device_);
+#else
+        LeaveCriticalSection(&lock_);
+#endif
+        delete wav;
+        return -4;
+    }
 
     Channel* ch = new Channel();
     ch->id = ch_id;
@@ -1010,12 +1029,6 @@ inline int GameSound::PlayPCM(const int16_t* pcm, int nchannels, int nsamples, i
     ch->repeat = repeat;
     ch->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
     ch->is_playing = true;
-
-#if GAMESOUND_USE_SDL
-    SDL_LockAudioDevice(audio_device_);
-#else
-    EnterCriticalSection(&lock_);
-#endif
     channels_[ch_id] = ch;
 #if GAMESOUND_USE_SDL
     SDL_UnlockAudioDevice(audio_device_);
