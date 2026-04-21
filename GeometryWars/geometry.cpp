@@ -16,10 +16,12 @@
 #include <string.h>
 
 #if defined(_WIN32) && !defined(USE_SDL)
-#include "../GameLib.h"
+#include "../include/GameLib.h"
 #else
-#include "../GameLib.SDL.h"
+#include "../include/GameLib.SDL.h"
 #endif
+
+// #include "fastblur.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
