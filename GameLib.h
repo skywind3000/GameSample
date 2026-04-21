@@ -61,7 +61,7 @@
 // Version Info
 #define GAMELIB_VERSION_MAJOR     1
 #define GAMELIB_VERSION_MINOR     9
-#define GAMELIB_VERSION_PATCH     6
+#define GAMELIB_VERSION_PATCH     7
 
 
 //---------------------------------------------------------------------
@@ -5170,6 +5170,7 @@ void CALLBACK GameLib::_WaveOutCallback(HWAVEOUT hwo, UINT uMsg,
                                          DWORD_PTR dwParam1,
                                          DWORD_PTR dwParam2)
 {
+	(void)dwParam2;
     if (uMsg != WOM_DONE) return;
 
     GameLib *game = (GameLib*)dwInstance;
