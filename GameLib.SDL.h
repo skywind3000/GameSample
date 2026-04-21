@@ -57,7 +57,7 @@
 
 #define GAMELIB_SDL_VERSION_MAJOR 1
 #define GAMELIB_SDL_VERSION_MINOR 9
-#define GAMELIB_SDL_VERSION_PATCH 5
+#define GAMELIB_SDL_VERSION_PATCH 6
 
 #include <stdint.h>
 #include <limits.h>
@@ -1517,18 +1517,26 @@ void GameLib::_SetMouseFromWindowCoords(int x, int y)
     if (x >= _windowWidth) x = _windowWidth - 1;
     if (y >= _windowHeight) y = _windowHeight - 1;
 
-    if (!_aspectLock || _aspectContentW <= 0 || _aspectContentH <= 0) {
+    if (!_aspectLock) {
         _mouseX = (int)(((long long)x * (long long)_width) / (long long)_windowWidth);
         _mouseY = (int)(((long long)y * (long long)_height) / (long long)_windowHeight);
     } else {
-        int cx = x - _aspectOffsetX;
-        int cy = y - _aspectOffsetY;
+        int scaleW = _windowWidth;
+        int scaleH = (int)(((long long)_windowWidth * (long long)_height) / (long long)_width);
+        if (scaleH > _windowHeight) {
+            scaleH = _windowHeight;
+            scaleW = (int)(((long long)_windowHeight * (long long)_width) / (long long)_height);
+        }
+        int offsetX = (_windowWidth - scaleW) / 2;
+        int offsetY = (_windowHeight - scaleH) / 2;
+        int cx = x - offsetX;
+        int cy = y - offsetY;
         if (cx < 0) cx = 0;
-        else if (cx >= _aspectContentW) cx = _aspectContentW - 1;
+        else if (cx >= scaleW) cx = scaleW - 1;
         if (cy < 0) cy = 0;
-        else if (cy >= _aspectContentH) cy = _aspectContentH - 1;
-        _mouseX = (int)(((long long)cx * (long long)_width) / (long long)_aspectContentW);
-        _mouseY = (int)(((long long)cy * (long long)_height) / (long long)_aspectContentH);
+        else if (cy >= scaleH) cy = scaleH - 1;
+        _mouseX = (int)(((long long)cx * (long long)_width) / (long long)scaleW);
+        _mouseY = (int)(((long long)cy * (long long)_height) / (long long)scaleH);
     }
 }
 
