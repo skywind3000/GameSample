@@ -1899,6 +1899,7 @@ int main() {
     game.Open(WIN_W, WIN_H, "Geometry Wars", true, true);
     game.ShowFps(true);
     game.ShowMouse(true);
+	game.AspectLock(true);
 
     // Load all-time records from save file (defaults to 0 if no save)
     bestScore = GameLib::LoadInt(SAVE_FILE, "bestScore", 0);

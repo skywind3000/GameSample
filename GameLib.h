@@ -45,7 +45,7 @@
 // Compile command (MinGW / Dev C++):
 //     g++ -o game.exe main.cpp -mwindows
 //
-// Last Modified: 2026/04/16
+// Last Modified: 2026/04/21
 //
 //=====================================================================
 #ifndef GAMELIB_H
@@ -61,7 +61,7 @@
 // Version Info
 #define GAMELIB_VERSION_MAJOR     1
 #define GAMELIB_VERSION_MINOR     9
-#define GAMELIB_VERSION_PATCH     3
+#define GAMELIB_VERSION_PATCH     5
 
 
 //---------------------------------------------------------------------
@@ -318,6 +318,7 @@ public:
     void SetTitle(const char *title);
     void ShowFps(bool show);
     void ShowMouse(bool show);
+    void AspectLock(bool lock, uint32_t color = COLOR_BLACK);
     int ShowMessage(const char *text, const char *title = NULL, int buttons = MESSAGEBOX_OK);
 
     // -------- Frame Buffer --------
@@ -514,6 +515,14 @@ private:
     int _clipW;
     int _clipH;
     bool _resizable;
+
+    // aspect lock
+    bool _aspectLock;
+    uint32_t _aspectColor;
+    int _aspectOffsetX;
+    int _aspectOffsetY;
+    int _aspectContentW;
+    int _aspectContentH;
 
     // frame buffer
     uint32_t *_framebuffer;
@@ -1154,6 +1163,12 @@ GameLib::GameLib()
     _clipW = 0;
     _clipH = 0;
     _resizable = false;
+    _aspectLock = false;
+    _aspectColor = COLOR_BLACK;
+    _aspectOffsetX = 0;
+    _aspectOffsetY = 0;
+    _aspectContentW = 0;
+    _aspectContentH = 0;
     _framebuffer = NULL;
     _presentBuffer = NULL;
     _presentMapX = NULL;
@@ -1260,6 +1275,10 @@ void GameLib::_DestroyGraphicsResources()
     _framebuffer = NULL;
     _presentWidth = 0;
     _presentHeight = 0;
+    _aspectOffsetX = 0;
+    _aspectOffsetY = 0;
+    _aspectContentW = 0;
+    _aspectContentH = 0;
     _windowWidth = 0;
     _windowHeight = 0;
     _clipX = 0;
@@ -1281,8 +1300,28 @@ void GameLib::_PresentFrame(HDC hdc)
         return;
     }
 
+    // compute aspect-lock layout when enabled
+    int aspectContentW = _windowWidth;
+    int aspectContentH = _windowHeight;
+    int aspectOffsetX = 0;
+    int aspectOffsetY = 0;
+    if (_aspectLock) {
+        int scaleW = _windowWidth;
+        int scaleH = (int)(((long long)_windowWidth * (long long)_height) / (long long)_width);
+        if (scaleH > _windowHeight) {
+            scaleH = _windowHeight;
+            scaleW = (int)(((long long)_windowHeight * (long long)_width) / (long long)_height);
+        }
+        aspectContentW = scaleW;
+        aspectContentH = scaleH;
+        aspectOffsetX = (_windowWidth - scaleW) / 2;
+        aspectOffsetY = (_windowHeight - scaleH) / 2;
+    }
+
     bool ready = (_presentWidth == _windowWidth) && (_presentHeight == _windowHeight) &&
-                 (_presentBuffer != NULL) && (_presentMapX != NULL) && (_presentMapY != NULL);
+                 (_presentBuffer != NULL) && (_presentMapX != NULL) && (_presentMapY != NULL) &&
+                 (_aspectOffsetX == aspectOffsetX) && (_aspectOffsetY == aspectOffsetY) &&
+                 (_aspectContentW == aspectContentW) && (_aspectContentH == aspectContentH);
     if (!ready) {
         uint32_t *newBuffer = (uint32_t*)realloc(_presentBuffer,
             (size_t)_windowWidth * (size_t)_windowHeight * sizeof(uint32_t));
@@ -1306,35 +1345,105 @@ void GameLib::_PresentFrame(HDC hdc)
         _presentMapY = newMapY;
         _presentWidth = _windowWidth;
         _presentHeight = _windowHeight;
+        _aspectOffsetX = aspectOffsetX;
+        _aspectOffsetY = aspectOffsetY;
+        _aspectContentW = aspectContentW;
+        _aspectContentH = aspectContentH;
 
-        for (int x = 0; x < _windowWidth; x++) {
-            _presentMapX[x] = (int)(((long long)x * (long long)_width) / (long long)_windowWidth);
-        }
-        for (int y = 0; y < _windowHeight; y++) {
-            _presentMapY[y] = (int)(((long long)y * (long long)_height) / (long long)_windowHeight);
+        if (_aspectLock) {
+            for (int x = 0; x < _windowWidth; x++) {
+                if (x < aspectOffsetX || x >= aspectOffsetX + aspectContentW)
+                    _presentMapX[x] = -1;
+                else
+                    _presentMapX[x] = (int)(((long long)(x - aspectOffsetX) * (long long)_width) / (long long)aspectContentW);
+            }
+            for (int y = 0; y < _windowHeight; y++) {
+                if (y < aspectOffsetY || y >= aspectOffsetY + aspectContentH)
+                    _presentMapY[y] = -1;
+                else
+                    _presentMapY[y] = (int)(((long long)(y - aspectOffsetY) * (long long)_height) / (long long)aspectContentH);
+            }
+        } else {
+            for (int x = 0; x < _windowWidth; x++) {
+                _presentMapX[x] = (int)(((long long)x * (long long)_width) / (long long)_windowWidth);
+            }
+            for (int y = 0; y < _windowHeight; y++) {
+                _presentMapY[y] = (int)(((long long)y * (long long)_height) / (long long)_windowHeight);
+            }
         }
         _InitDIBInfo(_present_bmi_data, _windowWidth, _windowHeight);
     }
 
     const int dstWidth = _windowWidth;
     const size_t rowBytes = (size_t)dstWidth * sizeof(uint32_t);
+    const uint32_t barColor = _aspectLock ? _aspectColor : 0;
     int previousSrcY = -1;
     uint32_t *previousDstRow = NULL;
 
-    for (int y = 0; y < _windowHeight; y++) {
-        int srcY = _presentMapY[y];
-        uint32_t *dstRow = _presentBuffer + (size_t)y * (size_t)dstWidth;
-        if (srcY == previousSrcY && previousDstRow) {
-            memcpy(dstRow, previousDstRow, rowBytes);
-            continue;
+    if (_aspectLock) {
+        int offX = _aspectOffsetX;
+        int cw = _aspectContentW;
+        int barLeftEnd = offX;
+        int contentStart = offX;
+        int contentEnd = offX + cw;
+        int rightStart = contentEnd;
+
+        // build a template row for black-bar rows
+        uint32_t *templateRow = NULL;
+        int firstBarY = -1;
+        for (int y = 0; y < _windowHeight; y++) {
+            if (_presentMapY[y] < 0) { firstBarY = y; break; }
+        }
+        if (firstBarY >= 0) {
+            templateRow = _presentBuffer + (size_t)firstBarY * (size_t)dstWidth;
+            uint32_t *dstRow = templateRow;
+            for (int x = 0; x < barLeftEnd; x++) dstRow[x] = barColor;
+            for (int x = rightStart; x < dstWidth; x++) dstRow[x] = barColor;
+            // content area also filled with barColor for this template
+            for (int x = contentStart; x < contentEnd; x++) dstRow[x] = barColor;
         }
 
-        const uint32_t *srcRow = _framebuffer + (size_t)srcY * (size_t)_width;
-        for (int x = 0; x < dstWidth; x++) {
-            dstRow[x] = srcRow[_presentMapX[x]];
+        for (int y = 0; y < _windowHeight; y++) {
+            uint32_t *dstRow = _presentBuffer + (size_t)y * (size_t)dstWidth;
+            if (_presentMapY[y] < 0) {
+                // black-bar row: memcpy from template
+                if (templateRow && templateRow != dstRow) {
+                    memcpy(dstRow, templateRow, rowBytes);
+                }
+                continue;
+            }
+
+            int srcY = _presentMapY[y];
+            if (srcY == previousSrcY && previousDstRow) {
+                memcpy(dstRow, previousDstRow, rowBytes);
+                continue;
+            }
+
+            // three segments: left bar, content, right bar
+            for (int x = 0; x < barLeftEnd; x++) dstRow[x] = barColor;
+            const uint32_t *srcRow = _framebuffer + (size_t)srcY * (size_t)_width;
+            for (int x = contentStart; x < contentEnd; x++) dstRow[x] = srcRow[_presentMapX[x]];
+            for (int x = rightStart; x < dstWidth; x++) dstRow[x] = barColor;
+
+            previousSrcY = srcY;
+            previousDstRow = dstRow;
         }
-        previousSrcY = srcY;
-        previousDstRow = dstRow;
+    } else {
+        for (int y = 0; y < _windowHeight; y++) {
+            int srcY = _presentMapY[y];
+            uint32_t *dstRow = _presentBuffer + (size_t)y * (size_t)dstWidth;
+            if (srcY == previousSrcY && previousDstRow) {
+                memcpy(dstRow, previousDstRow, rowBytes);
+                continue;
+            }
+
+            const uint32_t *srcRow = _framebuffer + (size_t)srcY * (size_t)_width;
+            for (int x = 0; x < dstWidth; x++) {
+                dstRow[x] = srcRow[_presentMapX[x]];
+            }
+            previousSrcY = srcY;
+            previousDstRow = dstRow;
+        }
     }
 
     _gl_SetDIBitsToDevice(hdc, 0, 0, (DWORD)_windowWidth, (DWORD)_windowHeight,
@@ -1372,8 +1481,19 @@ void GameLib::_SetMouseFromWindowCoords(int x, int y)
     if (x >= _windowWidth) x = _windowWidth - 1;
     if (y >= _windowHeight) y = _windowHeight - 1;
 
-    _mouseX = (int)(((long long)x * (long long)_width) / (long long)_windowWidth);
-    _mouseY = (int)(((long long)y * (long long)_height) / (long long)_windowHeight);
+    if (!_aspectLock || _aspectContentW <= 0 || _aspectContentH <= 0) {
+        _mouseX = (int)(((long long)x * (long long)_width) / (long long)_windowWidth);
+        _mouseY = (int)(((long long)y * (long long)_height) / (long long)_windowHeight);
+    } else {
+        int cx = x - _aspectOffsetX;
+        int cy = y - _aspectOffsetY;
+        if (cx < 0) cx = 0;
+        else if (cx >= _aspectContentW) cx = _aspectContentW - 1;
+        if (cy < 0) cy = 0;
+        else if (cy >= _aspectContentH) cy = _aspectContentH - 1;
+        _mouseX = (int)(((long long)cx * (long long)_width) / (long long)_aspectContentW);
+        _mouseY = (int)(((long long)cy * (long long)_height) / (long long)_aspectContentH);
+    }
 }
 
 
@@ -2071,6 +2191,14 @@ void GameLib::ShowMouse(bool show)
     }
 }
 
+void GameLib::AspectLock(bool lock, uint32_t color)
+{
+    _aspectLock = lock;
+    _aspectColor = color;
+    _presentWidth = 0;
+    _presentHeight = 0;
+}
+
 int GameLib::ShowMessage(const char *text, const char *title, int buttons)
 {
     const char *messageText = text ? text : "";
@@ -2447,13 +2575,18 @@ void GameLib::FillRect(int x, int y, int w, int h, uint32_t color)
     int x1 = x, y1 = y, x2 = x + w, y2 = y + h;
     if (!_ClipRectToCurrentClip(&x1, &y1, &x2, &y2)) return;
 
-    bool opaque = COLOR_GET_A(color) == 255;
-    for (int j = y1; j < y2; j++) {
-        uint32_t *row = _framebuffer + j * _width;
-        for (int i = x1; i < x2; i++) {
-            if (opaque) {
-                row[i] = color;
-            } else {
+    int rw = x2 - x1;
+    size_t rowBytes = (size_t)rw * sizeof(uint32_t);
+    if (COLOR_GET_A(color) == 255) {
+        uint32_t *firstRow = _framebuffer + y1 * _width + x1;
+        for (int i = 0; i < rw; i++) firstRow[i] = color;
+        for (int j = y1 + 1; j < y2; j++) {
+            memcpy(_framebuffer + j * _width + x1, firstRow, rowBytes);
+        }
+    } else {
+        for (int j = y1; j < y2; j++) {
+            uint32_t *row = _framebuffer + j * _width;
+            for (int i = x1; i < x2; i++) {
                 _gamelib_blend_pixel(row + i, color);
             }
         }
@@ -2787,6 +2920,7 @@ void GameLib::DrawText(int x, int y, const char *text, uint32_t color)
         const unsigned char *glyph = _gamelib_font8x8[ch - 32];
         for (int row = 0; row < 8; row++) {
             unsigned char bits = glyph[row];
+            if (bits == 0) continue;
             for (int col = 0; col < 8; col++) {
                 if (bits & (0x80 >> col)) {
                     SetPixel(x + col, y + row, color);
@@ -2807,6 +2941,7 @@ void GameLib::DrawNumber(int x, int y, int number, uint32_t color)
 void GameLib::DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h)
 {
     if (!text || w <= 0 || h <= 0 || w > 1024 || h > 1024) return;
+    if (w == 8 && h == 8) { DrawText(x, y, text, color); return; }
     if (!_textSrcRowMap) {
         _textSrcRowMap = (int*)malloc(1024 * sizeof(int));
         _textSrcColMap = (int*)malloc(1024 * sizeof(int));

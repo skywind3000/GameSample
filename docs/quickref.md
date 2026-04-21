@@ -20,9 +20,10 @@
 | `SetTitle(title)`            | 修改窗口标题                 |
 | `ShowFps(show)`              | 是否在标题栏显示实时 FPS     |
 | `ShowMouse(show)`            | 显示或隐藏窗口内鼠标光标     |
+| `AspectLock(lock, color)`    | 锁定长宽比，黑边用指定颜色填充 |
 | `ShowMessage(text, title, buttons)` | 弹出消息框，支持 `OK` 或 `YES/NO` |
 
-`Open()` 里的 `w/h` 只决定 framebuffer 逻辑尺寸；`Update()` 提交画面时，如果当前窗口客户区尺寸与 framebuffer 一致就直接提交，否则自动缩放填满整个客户区。`SetMaximized()` 仅在 `Open(..., ..., ..., ..., true)` 创建的可缩放窗口上生效；`WinResize()` 同时适用于可缩放和不可缩放窗口，参数始终表示客户区尺寸。当前 Win32 主线按线程维度假设“一个 GameLib 窗口 + 一个 GameLib 主循环”；不要在同一线程里同时驱动多个 GameLib 窗口，也不要把 `Update()` 的消息循环和宿主自己的独立消息循环并行使用。
+`Open()` 里的 `w/h` 只决定 framebuffer 逻辑尺寸；`Update()` 提交画面时，如果当前窗口客户区尺寸与 framebuffer 一致就直接提交，否则自动缩放填满整个客户区。调用 `AspectLock(true)` 后缩放时会保持 framebuffer 长宽比不变，多余区域用指定颜色填充黑边；鼠标坐标也会映射到内容区域而非黑边。`SetMaximized()` 仅在 `Open(..., ..., ..., ..., true)` 创建的可缩放窗口上生效；`WinResize()` 同时适用于可缩放和不可缩放窗口，参数始终表示客户区尺寸。当前 Win32 主线按线程维度假设”一个 GameLib 窗口 + 一个 GameLib 主循环”；不要在同一线程里同时驱动多个 GameLib 窗口，也不要把 `Update()` 的消息循环和宿主自己的独立消息循环并行使用。
 
 ### 绘图
 

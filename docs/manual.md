@@ -322,6 +322,35 @@ void ShowMouse(bool show);
 
 ---
 
+### AspectLock
+
+锁定 framebuffer 长宽比，在缩放显示时保持原始比例，多余区域用指定颜色填充黑边。
+
+**函数声明**
+```cpp
+void AspectLock(bool lock, uint32_t color = COLOR_BLACK);
+```
+
+**参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `lock` | `bool` | 是否锁定长宽比。默认不锁定 |
+| `color` | `uint32_t` | 黑边填充颜色，默认 `COLOR_BLACK` |
+
+**返回值**
+无
+
+**备注**
+
+- 默认不锁定，缩放时 framebuffer 像素填满整个客户区（可能变形）。
+- 锁定后，缩放时保持 `_width:_height` 的长宽比不变，居中显示内容，上下或左右用 `color` 填充黑边。
+- 鼠标坐标（`GetMouseX/Y`）会映射到内容区域，黑边区域的鼠标坐标 clamp 到 framebuffer 边缘。
+- 当窗口客户区尺寸与 framebuffer 一致时，锁定与否行为相同（无需缩放，无黑边）。
+- 可在运行时随时切换锁定状态和颜色。
+
+---
+
 ### ShowMessage
 
 弹出消息框。
@@ -617,7 +646,7 @@ void FillRect(int x, int y, int w, int h, uint32_t color);
 
 **备注**
 
-带裁剪，直接写帧缓冲。支持 Alpha 混合。
+带裁剪，直接写帧缓冲。支持 Alpha 混合。不透明路径（alpha==255）首行逐像素填充 + `memcpy` 复制后续行。
 
 ---
 
@@ -816,7 +845,7 @@ void DrawText(int x, int y, const char *text, uint32_t color);
 
 **备注**
 
-支持 `\n` 换行（行间距 10 像素）。每个字符宽 8 像素。
+支持 `\n` 换行（行间距 10 像素）。每个字符宽 8 像素。空行（bits==0）整体跳过。
 
 ---
 
@@ -875,6 +904,7 @@ void DrawTextScale(int x, int y, const char *text, uint32_t color, int w, int h)
 - 内置 8×8 位图字体通过定点采样映射到 `w × h` 区域，`w` 和 `h` 可以不同，实现非等比缩放。
 - 旧版 `scale` 参数的效果等价于 `w = 8 × scale, h = 8 × scale`。
 - `w`、`h` 最大值 1024，超出直接返回。
+- `w==8 && h==8` 时直接走 `DrawText` 快路径，不经过查找表。
 - 支持 `\n` 换行（行间距 `h + h / 4`）。
 - alpha==255 时直写 framebuffer，alpha<255 时按比例混合。
 
