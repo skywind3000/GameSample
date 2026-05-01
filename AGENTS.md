@@ -15,6 +15,7 @@
   - quickref.md          # GameLib.h 快速 API 参考
   - GameSound.md         # GameSound.h 技术规格文档
   - sdl2port.md          # GameLib.SDL.h 使用与 WASM 编译说明（WASM 编译必读）
+  - wasmbuild.md         # WASM 构建指南（详细构建过程、命令、HTML 页面、常见问题）
 - <GameName>/            # 各游戏项目目录（如 GeometryWars/）
   - assets/              # 游戏专属音效资源
   - design.md            # 游戏设计文档（玩法、敌人、计分、操控）
@@ -31,6 +32,7 @@
 | `docs/manual.md` | GameLib.h 公开 API 接口说明 | 开发新游戏或查阅 API 时 |
 | `docs/quickref.md` | GameLib.h 快速 API 列表 | 开发新游戏时快速查阅 |
 | `docs/sdl2port.md` | GameLib.SDL.h 使用与 WASM 编译说明 | 使用 SDL 版或编译 WASM 时（WASM 编译必读） |
+| `docs/wasmbuild.md` | WASM 构建指南（详细过程、命令、HTML 页面、常见问题） | 实际编译 WASM 时（详细操作步骤） |
 
 以上文档是 GameLib.h API 的权威来源，开发游戏时应优先参考。
 

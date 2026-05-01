@@ -110,7 +110,7 @@ emcc -std=c++11 -O2 \
      -s USE_SDL_TTF=2 -s USE_SDL_MIXER=2 \
      --use-port=sdl2_mixer:formats=mp3 --use-port=sdl2_mixer:formats=ogg \
      -s ASYNCIFY=1 \
-     main.cpp -o game.html --preload-file assets
+     main.cpp -o game.js --preload-file assets
 ```
 
 关键说明：
@@ -121,6 +121,7 @@ emcc -std=c++11 -O2 \
 - **`--preload-file assets`**：将资源打包到虚拟文件系统，代码中的 `assets/*.png` 等路径会从 MEMFS 加载。
 - WASM 版需要通过 HTTP 服务器访问，不能直接用文件协议打开。
 - SDL2_mixer port 不支持 FLAC/MIDI。
+- **输出 `-o game.js` 而非 `-o game.html`**：Emscripten 每次编译会重新生成 `.html`，覆盖手动修改。改为输出 `.js`（生成 `game.js` + `game.wasm` + `game.data`），然后编写自定义 `game.html` 页面加载 `game.js`。自定义页面可以美化外观、添加 loading 遮罩等。注意：canvas 必须设置 CSS `width` 和 `height`（如 `800px` / `600px`），否则 flex 布局可能导致 canvas 坍缩为极小尺寸。
 
 ### 3.6 只测 SDL2 核心能力的写法
 

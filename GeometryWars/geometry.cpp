@@ -5,7 +5,7 @@
 //
 // Compile (Win32): g++ -std=c++11 -O2 -Wall -Wextra -o geometry.exe geometry.cpp -mwindows
 //
-// Controls: WASD = Move, Mouse = Aim, Left Click = Shoot, F9 = Invincibility, ESC = Quit
+// Controls: WASD = Move, Mouse = Aim, Left Click = Shoot, F9 = Invincibility, ESC = Quit (WASM: Back to Title)
 
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -1955,7 +1955,18 @@ int main() {
         if (dt > 0.05) dt = 0.05; // clamp to prevent physics explosion at very low FPS
         float fdt = (float)dt;
 
+        #if defined(__EMSCRIPTEN__)
+        if (game.IsKeyPressed(KEY_ESCAPE)) {
+            if (game.GetScene() != SCENE_TITLE) {
+                game.StopMusic();
+                game.StopAll();
+                game.SetScene(SCENE_TITLE);
+                resetGame();
+            }
+        }
+#else
         if (game.IsKeyPressed(KEY_ESCAPE)) break;
+#endif
 
         // Debug hotkey: F9 = Invincibility
         if (game.IsKeyPressed(KEY_F9)) {
