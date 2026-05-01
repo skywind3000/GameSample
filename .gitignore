@@ -60,3 +60,6 @@
 *.xz
 *.gz
 *.sav
+
+/publish/*
+/html/*
