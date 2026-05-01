@@ -2280,6 +2280,9 @@ int main() {
     }
 
     game.Update();
+#if defined(__EMSCRIPTEN__)
+    game.WaitFrame(60);
+#endif
     }
 
     return 0;
