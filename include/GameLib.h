@@ -61,7 +61,7 @@
 // Version Info
 #define GAMELIB_VERSION_MAJOR     1
 #define GAMELIB_VERSION_MINOR     9
-#define GAMELIB_VERSION_PATCH     8
+#define GAMELIB_VERSION_PATCH     9
 
 
 //---------------------------------------------------------------------
@@ -85,7 +85,7 @@
 
 #include <vector>
 #include <string>
-#include <unordered_map>
+#include <map>
 
 
 //---------------------------------------------------------------------
@@ -612,8 +612,8 @@ private:
         _Channel() : id(0), wav(NULL), position(0), repeat(1),
                      volume(1000), is_playing(false) {}
     };
-    std::unordered_map<std::string, _WavData*> _wav_cache;
-    std::unordered_map<int, _Channel*> _audio_channels;
+    std::map<std::string, _WavData*> _wav_cache;
+    std::map<int, _Channel*> _audio_channels;
     int64_t _next_channel_id;
     bool _audio_initialized;
     int _master_volume;
@@ -1539,12 +1539,12 @@ GameLib::~GameLib()
     _ShutdownAudioBackend();
 
     // Clean up audio channels and WAV cache (no lock needed since callbacks stopped)
-    for (std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+    for (std::map<int, _Channel*>::iterator it = _audio_channels.begin();
          it != _audio_channels.end(); ++it) {
         delete it->second;
     }
     _audio_channels.clear();
-    for (std::unordered_map<std::string, _WavData*>::iterator it = _wav_cache.begin();
+    for (std::map<std::string, _WavData*>::iterator it = _wav_cache.begin();
          it != _wav_cache.end(); ++it) {
         delete it->second;
     }
@@ -5209,7 +5209,7 @@ void GameLib::_MixAudio(int16_t *output_buffer, int sample_count)
 
     EnterCriticalSection(&_audio_lock);
 
-    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+    std::map<int, _Channel*>::iterator it = _audio_channels.begin();
     while (it != _audio_channels.end()) {
         _Channel *ch = it->second;
         if (!ch->is_playing) {
@@ -5261,7 +5261,8 @@ void GameLib::_MixAudio(int16_t *output_buffer, int sample_count)
                     if (ch->wav->temporary) delete ch->wav;
                 }
                 delete ch;
-                it = _audio_channels.erase(it);
+                std::map<int, _Channel*>::iterator to_erase = it++;
+                _audio_channels.erase(to_erase);
                 continue;
             }
         }
@@ -5436,7 +5437,7 @@ GameLib::_WavData *GameLib::_ConvertToTargetFormat(_WavData *src)
 GameLib::_WavData *GameLib::_LoadOrCacheWAV(const char *filename)
 {
     std::string key(filename);
-    std::unordered_map<std::string, _WavData*>::iterator it = _wav_cache.find(key);
+    std::map<std::string, _WavData*>::iterator it = _wav_cache.find(key);
     if (it != _wav_cache.end()) {
         it->second->ref_count++;
         return it->second;
@@ -5471,7 +5472,7 @@ int GameLib::_AllocateChannel()
 
 void GameLib::_ReleaseChannel(int channel_id)
 {
-    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel_id);
+    std::map<int, _Channel*>::iterator it = _audio_channels.find(channel_id);
     if (it != _audio_channels.end()) {
         if (it->second->wav) {
             it->second->wav->ref_count--;
@@ -5563,7 +5564,7 @@ int GameLib::PlayPCM(const int16_t *pcm, int nchannels, int nsamples, int sample
 int GameLib::StopWAV(int channel)
 {
     EnterCriticalSection(&_audio_lock);
-    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    std::map<int, _Channel*>::iterator it = _audio_channels.find(channel);
     if (it == _audio_channels.end()) {
         LeaveCriticalSection(&_audio_lock);
         return -1;
@@ -5576,7 +5577,7 @@ int GameLib::StopWAV(int channel)
 int GameLib::IsPlaying(int channel)
 {
     EnterCriticalSection(&_audio_lock);
-    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    std::map<int, _Channel*>::iterator it = _audio_channels.find(channel);
     int result = -1;
     if (it != _audio_channels.end()) {
         result = it->second->is_playing ? 1 : 0;
@@ -5588,7 +5589,7 @@ int GameLib::IsPlaying(int channel)
 int GameLib::SetVolume(int channel, int volume)
 {
     EnterCriticalSection(&_audio_lock);
-    std::unordered_map<int, _Channel*>::iterator it = _audio_channels.find(channel);
+    std::map<int, _Channel*>::iterator it = _audio_channels.find(channel);
     int result = -1;
     if (it != _audio_channels.end()) {
         it->second->volume = (volume < 0) ? 0 : (volume > 1000 ? 1000 : volume);
@@ -5602,7 +5603,7 @@ void GameLib::StopAll()
 {
     EnterCriticalSection(&_audio_lock);
     std::vector<int> channel_ids;
-    for (std::unordered_map<int, _Channel*>::iterator it = _audio_channels.begin();
+    for (std::map<int, _Channel*>::iterator it = _audio_channels.begin();
          it != _audio_channels.end(); ++it) {
         channel_ids.push_back(it->first);
     }
